@@ -12,47 +12,34 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/employees/$(request.auth.uid)).data.isAdmin == true;
     }
 
-    // Helper: prevent self-promotion or self-edit of sensitive fields
-    function selfUpdateIsSafe(uid) {
-      return signedIn()
-        && request.auth.uid == uid
-        // must already exist
-        && resource != null
-        // no change to sensitive fields
-        && request.resource.data.rank == resource.data.rank
-        && request.resource.data.status == resource.data.status
-        && request.resource.data.qualifications == resource.data.qualifications
-        && request.resource.data.isAdmin == resource.data.isAdmin;
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
     }
 
-    // Settings (pay)
+    // Settings (rates, plafonds, salaires)
     match /settings/{docId} {
       allow read: if signedIn();
       allow write: if isAdmin();
     }
 
-    // Employees profiles
+    // Employees profiles + work logs
     match /employees/{uid} {
-      allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
-
-      // Create own profile only (isAdmin must be false)
-      allow create: if signedIn()
-        && request.auth.uid == uid
-        && request.resource.data.isAdmin == false;
-
-      // Update:
-      // - Admin can update anything
-      // - Employee can update only non-sensitive fields (e.g., name, birth, nationality)
-      allow update: if isAdmin() || selfUpdateIsSafe(uid);
-
+      allow read: if signedIn() && (isSelf(uid) || isAdmin());
+      allow create: if isSelf(uid);
+      allow update: if (isSelf(uid) && request.resource.data.isAdmin == resource.data.isAdmin) || isAdmin();
       allow delete: if isAdmin();
 
-      // Daily work logs
       match /workDays/{dayId} {
-        allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
-        allow create, update: if signedIn() && (request.auth.uid == uid || isAdmin());
+        allow read: if signedIn() && (isSelf(uid) || isAdmin());
+        allow create, update: if signedIn() && (isSelf(uid) || isAdmin());
         allow delete: if isAdmin();
       }
+    }
+
+    // Public weekly leaderboard (visible to all signed-in users)
+    match /weeks/{weekId}/public/{uid} {
+      allow read: if signedIn();
+      allow write: if signedIn() && (isSelf(uid) || isAdmin());
     }
 
     // Invites: readable by code (get), not listable
