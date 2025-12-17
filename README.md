@@ -15,10 +15,10 @@ Site **100% JavaScript (statique)** prévu pour **GitHub Pages**, avec comptes e
   - Salaire convois **max 5 000 000 $**
   - Salaire sécurité **max 3 500 000 $**
   - Salaire évènements **pas de max**
-  - Heures = **convois / 2**
+  - Heures = **convois / 2** • **sécurité / 7** • **évènements × 2**
   - Rapport **$/heure**
 - Bulletin de paie imprimable (Ctrl+P → PDF)
-- Contrat CDI auto (modifiable avant impression)
+- Contrat CDI auto (lecture pour employés, **édition admin** possible)
 - Admin :
   - création de codes d’invitation
   - modification grade/statut/qualifs/admin
@@ -75,7 +75,7 @@ Copie le contenu du fichier `firestore.rules` fourni dans ce repo.
 
 ## Notes
 
-- Les rates ($/convoi, etc.) sont modifiables dans l’onglet **Paramètres** (admin).
-- Les montants par défaut sont volontairement simples, pour que tu adaptes au RP.
+- La paie est calculée via le **taux $/h du grade** + plafonds (convois/sécurité/prime).
+- Directeur + Co-directeur : **fixe hebdo 8 500 000 $** (modifiable dans Paramètres).
 
 Bon RP 🛡️
