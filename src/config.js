@@ -19,13 +19,14 @@ export const UI_ADMIN_EMAILS = [
 
 // Valeurs par défaut si aucun doc Firestore `settings/pay` n'existe encore.
 export const DEFAULT_PAY_SETTINGS = {
+  directorWeekly: 8500000, // Directeur + Co-directeur : fixe hebdo
   convoyRate: 250000,       // $ par convoi
   securityRate: 175000,     // $ par contrôle sécurité
   eventRate: 250000,        // $ par événement sécurisé (pas de max)
   convoyMax: 5000000,       // plafond hebdo convois
   securityMax: 3500000,     // plafond hebdo sécurité
   primeMax: 8500000,        // plafond prime (= convois + sécurité)
-  // barème salaires de base (hebdo)
+  // barème $/heure (convois) selon grade
   baseSalaries: {
     "Directeur": 0,
     "Co-directeur": 0,
