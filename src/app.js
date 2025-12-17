@@ -77,10 +77,6 @@ function escapeHtml(s=""){
   return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
 }
 
-function normalizeInviteCode(raw){
-  return String(raw||"").trim().toUpperCase().replace(/\s+/g, "");
-}
-
 async function getPaySettings(){
   const ref = firebase.doc(db, "settings", "pay");
   const snap = await firebase.getDoc(ref);
@@ -252,18 +248,9 @@ el("#signupForm").addEventListener("submit", async (e)=>{
   const password = String(fd.get("password")||"");
   if (!invite) return toast("Code d’invitation requis.", "error");
   try{
-    // Option: vérifier d'abord l'invite (get) pour éviter de créer un compte inutile.
-    const inviteRef = firebase.doc(db, "invites", invite);
-    const inviteSnap = await firebase.getDoc(inviteRef);
-    if (!inviteSnap.exists()){
-      return toast("Code d’invitation invalide.", "error");
-    }
-    if (inviteSnap.data()?.usedBy){
-      return toast("Code déjà utilisé.", "error");
-    }
-
-    let cred;
-    cred = await firebase.createUserWithEmailAndPassword(auth, email, password);
+    // On crée d'abord le compte Auth (puis on rattache via l'invitation).
+    // Cela permet de fonctionner même si tes règles Firestore bloquent les lectures quand on est déconnecté.
+    const cred = await firebase.createUserWithEmailAndPassword(auth, email, password);
     const uid = cred.user.uid;
 
     // Token refresh: évite un cas rare où la 1ère écriture Firestore est refusée juste après la création du compte
@@ -280,12 +267,40 @@ el("#signupForm").addEventListener("submit", async (e)=>{
   }
 });
 
+function normalizeInviteCode(v){
+  return String(v||"")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "");
+}
+
+async function resolveInviteRef(inviteCode){
+  // 1) Format standard : le code est l'ID du document
+  const directRef = firebase.doc(db, "invites", inviteCode);
+  try{
+    const snap = await firebase.getDoc(directRef);
+    if (snap.exists()) return { ref: directRef, data: snap.data() };
+  }catch(_e){
+    // ignore : on tentera la recherche par champ "code"
+  }
+
+  // 2) Compat : anciens formats où l'ID est auto et le code est stocké dans un champ "code"
+  const col = firebase.collection(db, "invites");
+  const q = firebase.query(col, firebase.where("code", "==", inviteCode), firebase.limit(1));
+  const qs = await firebase.getDocs(q);
+  if (!qs.empty){
+    const d = qs.docs[0];
+    return { ref: d.ref, data: d.data() };
+  }
+  return null;
+}
+
 /** ---------- Profil via invitation (utilisé à l'inscription + réparation) ---------- */
 async function createEmployeeProfileFromInvite(uid, email, inviteCode){
-  const inviteRef = firebase.doc(db, "invites", inviteCode);
-  const inviteSnap = await firebase.getDoc(inviteRef);
-  if (!inviteSnap.exists()) throw new Error("Code d’invitation invalide.");
-  if (inviteSnap.data()?.usedBy) throw new Error("Code déjà utilisé.");
+  const code = normalizeInviteCode(inviteCode);
+  const resolved = await resolveInviteRef(code);
+  if (!resolved) throw new Error("Code d’invitation invalide.");
+  const inviteRef = resolved.ref;
 
   await firebase.runTransaction(db, async (tx)=>{
     const inv = await tx.get(inviteRef);
@@ -310,7 +325,7 @@ async function createEmployeeProfileFromInvite(uid, email, inviteCode){
 
     tx.update(inviteRef, {
       usedBy: uid,
-      usedEmail: email,
+      usedEmail: (auth.currentUser?.email || email),
       usedAt: firebase.serverTimestamp()
     });
   });
@@ -979,9 +994,12 @@ viewRoot.querySelectorAll(".btnViewContract").forEach(btn=>{
     try{
       const ref = firebase.doc(db, "invites", code);
       await firebase.setDoc(ref, {
+        code,
         name, birth, nationality,
         rank, status,
         qualifications,
+        isAdmin: false,
+        // champs "used*" explicitement à null : évite des règles trop strictes et clarifie l'état du code
         usedBy: null,
         usedEmail: null,
         usedAt: null,
@@ -1261,7 +1279,7 @@ async function renderMissingProfile(){
 
   el("#repairForm").addEventListener("submit", async (e)=>{
     e.preventDefault();
-    const code = normalizeInviteCode(new FormData(e.currentTarget).get("invite"));
+    const code = String(new FormData(e.currentTarget).get("invite")||"").trim();
     if (!code) return toast("Code requis.", "error");
     try{
       await createEmployeeProfileFromInvite(state.user.uid, state.user.email, code);
