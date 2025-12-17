@@ -258,3 +258,6 @@ button.sm{padding:6px 10px; border-radius:12px; font-size:12px}
   margin-top:2px;
   font-size:13px;
 }
+
+
+input:disabled, textarea:disabled, select:disabled{opacity:.65; cursor:not-allowed}
