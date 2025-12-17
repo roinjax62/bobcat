@@ -83,25 +83,37 @@ async function setPaySettings(settings){
 }
 
 function computePay({rank, totals, pay}){
-  const base = (pay.baseSalaries?.[rank] ?? 0) || 0;
+  const hourRate = (pay.baseSalaries?.[rank] ?? 0) || 0; // $/heure (convois) selon le grade
+  const hours = totals.convoys / 2; // règle demandée : 2 convois = 1h
 
-  const convoyPayRaw = totals.convoys * pay.convoyRate;
+  // Directeur / Co-directeur : fixe hebdo
+  if (rank === "Directeur" || rank === "Co-directeur"){
+    const fixed = pay.directorWeekly ?? 8500000;
+    const perHour = hours > 0 ? fixed / hours : null;
+    return {
+      hourRate, base: fixed,
+      convoyPay: 0, securityPay: 0, prime: 0, eventPay: 0,
+      total: fixed, hours, perHour, fixedWeekly: fixed
+    };
+  }
+
+  // Convois : rémunération basée sur le taux horaire du grade
+  const convoyPayRaw = hours * hourRate;
   const securityPayRaw = totals.securityChecks * pay.securityRate;
 
   const convoyPay = Math.min(convoyPayRaw, pay.convoyMax);
   const securityPay = Math.min(securityPayRaw, pay.securityMax);
 
-  // Prime = convois + sécurité (max 8.5M car 5M + 3.5M)
+  // Prime = convois + sécurité (max 8.5M par défaut)
   const prime = Math.min(convoyPay + securityPay, pay.primeMax);
 
   const eventPay = totals.securedEvents * pay.eventRate; // pas de max
 
-  const total = base + prime + eventPay;
+  const total = prime + eventPay;
 
-  const hours = totals.convoys / 2; // règle demandée
   const perHour = hours > 0 ? total / hours : null;
 
-  return { base, convoyPay, securityPay, prime, eventPay, total, hours, perHour };
+  return { hourRate, base: 0, convoyPay, securityPay, prime, eventPay, total, hours, perHour };
 }
 
 function contractTemplate({name, birth, nationality, dateStr, rank}){
@@ -170,7 +182,10 @@ let state = {
   profile: null,
   pay: null,
   currentView: "dashboard",
-  weekDate: new Date()
+  weekDate: new Date(),
+  // Mode admin: consulter un autre employé
+  viewAsUid: null,
+  viewAsName: null
 };
 
 /** ---------- DOM refs ---------- */
@@ -184,6 +199,10 @@ const me = el("#me");
 const weekDateInput = el("#weekDate");
 const btnThisWeek = el("#btnThisWeek");
 const btnSignOut = el("#btnSignOut");
+
+// Semaine verrouillée : on travaille uniquement sur la semaine en cours
+weekDateInput.disabled = true;
+
 
 function setActiveNav(view){
   els(".navbtn[data-view]").forEach(b=>{
@@ -297,9 +316,8 @@ btnThisWeek.addEventListener("click", ()=>{
 });
 
 weekDateInput.addEventListener("change", ()=>{
-  if (!weekDateInput.value) return;
-  state.weekDate = strToDate(weekDateInput.value);
-  render();
+  // Semaine verrouillée: seule la semaine en cours est modifiable.
+  weekDateInput.value = dateToStr(state.weekDate);
 });
 
 /** ---------- Load profile ---------- */
@@ -333,6 +351,14 @@ async function loadWeekDays(uid, startStr, endStr){
 }
 
 async function saveDay(uid, dateStr, data){
+  // Sécurité : on interdit la saisie hors de la semaine courante
+  const cw = currentWeekStartStr();
+  const ds = strToDate(dateStr);
+  const w = dateToStr(startOfWeek(ds));
+  if (w !== cw){
+    throw new Error("Saisie autorisée uniquement pour la semaine en cours.");
+  }
+
   const ref = firebase.doc(db, "employees", uid, "workDays", dateStr);
   await firebase.setDoc(ref, {
     convoys: num(data.convoys),
@@ -352,17 +378,76 @@ function computeTotals(daysMap){
   return totals;
 }
 
+function currentWeekStartStr(){
+  return dateToStr(startOfWeek(new Date()));
+}
+
+function isCurrentWeekSelected(){
+  return dateToStr(startOfWeek(state.weekDate)) === currentWeekStartStr();
+}
+
+async function upsertPublicWeek(uid, profile, totals, weekStartStr){
+  try{
+    const score = num(totals.convoys) + num(totals.securityChecks) + num(totals.securedEvents);
+    const ref = firebase.doc(db, "weeks", weekStartStr, "public", uid);
+    await firebase.setDoc(ref, {
+      uid,
+      name: profile?.name || "—",
+      rank: profile?.rank || "—",
+      status: profile?.status || "—",
+      convoys: num(totals.convoys),
+      securityChecks: num(totals.securityChecks),
+      securedEvents: num(totals.securedEvents),
+      score,
+      updatedAt: firebase.serverTimestamp()
+    }, { merge: true });
+  }catch(_e){
+    // Non bloquant
+  }
+}
+
+async function loadTop3(weekStartStr){
+  try{
+    const col = firebase.collection(db, "weeks", weekStartStr, "public");
+    const q = firebase.query(col, firebase.orderBy("score","desc"), firebase.limit(3));
+    const snap = await firebase.getDocs(q);
+    const list = [];
+    snap.forEach(d=>list.push({uid:d.id, ...d.data()}));
+    return list;
+  }catch(_e){
+    return [];
+  }
+}
+
+function renderViewAsBar(){
+  if (!state.profile?.isAdmin || !state.viewAsUid) return "";
+  const name = state.viewAsName ? escapeHtml(state.viewAsName) : escapeHtml(state.viewAsUid);
+  return `
+    <div class="viewAsBar noPrint">
+      <div>Mode admin : consultation de <b>${name}</b></div>
+      <div style="display:flex; gap:8px">
+        <button id="btnExitViewAs">Retour à moi</button>
+      </div>
+    </div>
+  `;
+}
+
 /** ---------- Views ---------- */
-async function renderDashboard(){
-  const uid = state.user.uid;
+async function renderDashboard(forUid=null){
+  const uid = forUid || state.user.uid;
+  const profile = forUid ? await loadProfile(uid) : state.profile;
+
+  // Semaine verrouillée : semaine en cours uniquement
+  state.weekDate = new Date();
   const s = startOfWeek(state.weekDate);
   const e = endOfWeek(state.weekDate);
+
   const startStr = dateToStr(s);
   const endStr = dateToStr(e);
 
   const days = await loadWeekDays(uid, startStr, endStr);
   const totals = computeTotals(days);
-  const payResult = computePay({ rank: state.profile.rank, totals, pay: state.pay });
+  const payResult = computePay({ rank: profile.rank, totals, pay: state.pay });
 
   const rows = [];
   for (let i=0;i<7;i++){
@@ -373,19 +458,24 @@ async function renderDashboard(){
     rows.push({ ds, label: d.toLocaleDateString("fr-FR",{weekday:"long", day:"2-digit", month:"2-digit"}), data });
   }
 
+  const canEdit = (uid === state.user.uid) || !!state.profile?.isAdmin;
+
   viewRoot.innerHTML = `
+    ${renderViewAsBar()}
     <section class="card">
       <div class="row">
         <div class="pills">
-          <span class="pill neutral">Grade: <b>${escapeHtml(state.profile.rank)}</b></span>
-          <span class="pill ${state.profile.status==="Actif"?"good":(state.profile.status==="Suspendu"?"bad":"bad")}">Statut: <b>${escapeHtml(state.profile.status)}</b></span>
+          <span class="pill neutral">Grade: <b>${escapeHtml(profile.rank)}</b></span>
+          <span class="pill ${profile.status==="Actif"?"good":(profile.status==="Suspendu"?"bad":"bad")}">Statut: <b>${escapeHtml(profile.status)}</b></span>
         </div>
         <div class="pills">
-          ${(state.profile.qualifications||[]).map(q=>`<span class="pill">${escapeHtml(q)}</span>`).join("") || `<span class="pill">Aucune qualification</span>`}
+          ${(profile.qualifications||[]).map(q=>`<span class="pill">${escapeHtml(q)}</span>`).join("") || `<span class="pill">Aucune qualification</span>`}
         </div>
       </div>
 
       <hr class="sep" />
+
+      <div class="panel" id="top3Panel"></div>
 
       <div class="kpis">
         <div class="kpi"><div class="label">Convois (hebdo)</div><div class="value">${totals.convoys}</div><div class="sub">Heures = convois / 2 → <b>${payResult.hours}</b> h</div></div>
@@ -411,9 +501,9 @@ async function renderDashboard(){
           ${rows.map(r=>`
             <tr data-date="${r.ds}">
               <td><b>${escapeHtml(r.label)}</b><div class="muted" style="font-family:var(--mono);font-size:12px">${r.ds}</div></td>
-              <td><input inputmode="numeric" class="inConvoys" value="${num(r.data.convoys)}" /></td>
-              <td><input inputmode="numeric" class="inSec" value="${num(r.data.securityChecks)}" /></td>
-              <td><input inputmode="numeric" class="inEvt" value="${num(r.data.securedEvents)}" /></td>
+              <td><input inputmode="numeric" class="inConvoys" ${!canEdit?"disabled":""} value="${num(r.data.convoys)}" /></td>
+              <td><input inputmode="numeric" class="inSec" ${!canEdit?"disabled":""} value="${num(r.data.securityChecks)}" /></td>
+              <td><input inputmode="numeric" class="inEvt" ${!canEdit?"disabled":""} value="${num(r.data.securedEvents)}" /></td>
               <td><button class="primary btnSaveDay">Enregistrer</button></td>
             </tr>
           `).join("")}
@@ -453,6 +543,27 @@ async function renderDashboard(){
     </section>
   `;
 
+// Top 3 de la semaine (visible à tous)
+const weekStartStr = dateToStr(s);
+const top3 = await loadTop3(weekStartStr);
+const topHtml = top3.length ? `
+  <h3 style="margin-top:0">🏆 Top 3 de la semaine</h3>
+  <ol style="margin:8px 0 0 18px">
+    ${top3.map(x=>`
+      <li>
+        <b>${escapeHtml(x.name||"—")}</b>
+        <span class="muted">• Convois: ${num(x.convoys)} • Sécurité: ${num(x.securityChecks)} • Events: ${num(x.securedEvents)}</span>
+      </li>
+    `).join("")}
+  </ol>
+` : `<h3 style="margin-top:0">🏆 Top 3 de la semaine</h3><p class="muted">Aucune donnée cette semaine (encore).</p>`;
+
+const topPanel = el("#top3Panel");
+if (topPanel) topPanel.innerHTML = topHtml;
+
+// Mise à jour du tableau public (leaderboard)
+await upsertPublicWeek(uid, profile, totals, weekStartStr);
+
   // bind save buttons
   viewRoot.querySelectorAll(".btnSaveDay").forEach(btn=>{
     btn.addEventListener("click", async (e)=>{
@@ -490,6 +601,7 @@ async function renderPayroll(forUid=null){
   const payResult = computePay({ rank: profile.rank, totals, pay: state.pay });
 
   viewRoot.innerHTML = `
+    ${renderViewAsBar()}
     <section class="card">
       <div class="row">
         <div>
@@ -511,6 +623,7 @@ async function renderPayroll(forUid=null){
           </div>
           <div class="pills">
             <span class="pill neutral">Grade: <b>${escapeHtml(profile.rank)}</b></span>
+            <span class="pill neutral">Taux $/h (convois): <b>${money((state.pay.baseSalaries?.[profile.rank] ?? 0) || 0)}</b></span>
             <span class="pill ${profile.status==="Actif"?"good":"bad"}">Statut: <b>${escapeHtml(profile.status)}</b></span>
           </div>
         </div>
@@ -557,6 +670,7 @@ async function renderContract(forUid=null){
   });
 
   viewRoot.innerHTML = `
+    ${renderViewAsBar()}
     <section class="card">
       <div class="row">
         <div>
@@ -572,7 +686,7 @@ async function renderContract(forUid=null){
 
       <div class="panel">
         <label>Contrat (modifiable avant impression)
-          <textarea id="contractText">${escapeHtml(tpl)}</textarea>
+          <textarea id="contractText"></textarea>
         </label>
         <div class="row noPrint">
           <button id="btnCopyContract">Copier</button>
@@ -582,8 +696,12 @@ async function renderContract(forUid=null){
     </section>
   `;
 
+  // Mettre le texte (évite tout scroll interne)
+  el("#contractText").textContent = tpl;
+
+  
   el("#btnCopyContract").addEventListener("click", async ()=>{
-    const t = el("#contractText").value;
+    const t = el("#contractText").textContent;
     await navigator.clipboard.writeText(t);
     toast("Contrat copié ✅");
   });
@@ -602,6 +720,25 @@ async function renderAdmin(){
 
   const employees = [];
   snap.forEach(d=>employees.push({ uid: d.id, ...d.data() }));
+
+  const weekStartStr = currentWeekStartStr();
+  const weekStats = new Map();
+  await Promise.all(employees.map(async (emp)=>{
+    try{
+      const ref = firebase.doc(db, "weeks", weekStartStr, "public", emp.uid);
+      const s = await firebase.getDoc(ref);
+      weekStats.set(emp.uid, s.exists() ? s.data() : { convoys:0, securityChecks:0, securedEvents:0 });
+    }catch(_e){
+      weekStats.set(emp.uid, { convoys:0, securityChecks:0, securedEvents:0 });
+    }
+  }));
+
+  const rowsData = employees.map(emp=>{
+    const ws = weekStats.get(emp.uid) || { convoys:0, securityChecks:0, securedEvents:0 };
+    const totals = { convoys:num(ws.convoys), securityChecks:num(ws.securityChecks), securedEvents:num(ws.securedEvents) };
+    const pr = computePay({ rank: emp.rank || "—", totals, pay: state.pay });
+    return { emp, ws, totals, pr };
+  });
 
   viewRoot.innerHTML = `
     <section class="card">
@@ -656,41 +793,84 @@ async function renderAdmin(){
       <div style="height:8px"></div>
 
       <table class="table" id="empTable">
-        <thead>
-          <tr>
-            <th>Employé</th>
-            <th>Grade</th>
-            <th>Statut</th>
-            <th>Qualifications</th>
-            <th style="width:160px"></th>
-          </tr>
-        </thead>
-        <tbody>
-          ${employees.map(emp=>`
-            <tr data-uid="${emp.uid}">
-              <td>
-                <b>${escapeHtml(emp.name||"—")}</b>
-                <div class="muted">${escapeHtml(emp.email||"—")} • <span style="font-family:var(--mono)">${emp.uid}</span></div>
-              </td>
-              <td>${escapeHtml(emp.rank||"—")}</td>
-              <td>${escapeHtml(emp.status||"—")}${emp.isAdmin?` <span class="pill neutral">ADMIN</span>`:""}</td>
-              <td>
-                <div class="pills">
-                  ${(emp.qualifications||[]).slice(0,6).map(q=>`<span class="pill">${escapeHtml(q)}</span>`).join("")}
-                  ${(emp.qualifications||[]).length>6?`<span class="pill">+${(emp.qualifications||[]).length-6}</span>`:""}
-                </div>
-              </td>
-              <td class="noPrint"><button class="primary btnEditEmp">Modifier</button></td>
-            </tr>
-          `).join("")}
-        </tbody>
-      </table>
+  <thead>
+    <tr>
+      <th>Employé</th>
+      <th>Grade</th>
+      <th>Statut</th>
+      <th>Qualifications</th>
+      <th>Convois</th>
+      <th>Sécurité</th>
+      <th>Events</th>
+      <th>Heures</th>
+      <th>Total $</th>
+      <th style="width:340px"></th>
+    </tr>
+  </thead>
+  <tbody>
+    ${rowsData.map(row=>`
+      <tr data-uid="${row.emp.uid}">
+        <td>
+          <b>${escapeHtml(row.emp.name||"—")}</b>
+          <div class="muted">${escapeHtml(row.emp.email||"—")} • <span style="font-family:var(--mono)">${escapeHtml(row.emp.uid)}</span></div>
+        </td>
+        <td>${escapeHtml(row.emp.rank||"—")}</td>
+        <td>${escapeHtml(row.emp.status||"—")}${row.emp.isAdmin?` <span class="pill neutral">ADMIN</span>`:""}</td>
+        <td>
+          <div class="pills">
+            ${(row.emp.qualifications||[]).slice(0,6).map(q=>`<span class="pill">${escapeHtml(q)}</span>`).join("")}
+            ${(row.emp.qualifications||[]).length>6?`<span class="pill">+${(row.emp.qualifications||[]).length-6}</span>`:""}
+          </div>
+        </td>
+        <td>${num(row.totals.convoys)}</td>
+        <td>${num(row.totals.securityChecks)}</td>
+        <td>${num(row.totals.securedEvents)}</td>
+        <td>${(row.pr.hours||0).toFixed(1)}</td>
+        <td><b>${money(row.pr.total)}</b></td>
+        <td class="noPrint">
+          <div class="actions">
+            <button class="sm btnViewDash" data-uid="${row.emp.uid}" data-name="${escapeHtml(row.emp.name||"")}">Dashboard</button>
+            <button class="sm btnViewPay" data-uid="${row.emp.uid}" data-name="${escapeHtml(row.emp.name||"")}">Bulletin</button>
+            <button class="sm btnViewContract" data-uid="${row.emp.uid}" data-name="${escapeHtml(row.emp.name||"")}">Contrat</button>
+            <button class="primary sm btnEditEmp">Modifier</button>
+          </div>
+        </td>
+      </tr>
+    `).join("")}
+  </tbody>
+</table>
     </section>
 
     <section class="card hidden" id="empEditCard"></section>
   `;
 
-  // invite form
+  // actions: consulter tableau de bord / bulletin / contrat
+viewRoot.querySelectorAll(".btnViewDash").forEach(btn=>{
+  btn.addEventListener("click", ()=>{
+    state.viewAsUid = btn.dataset.uid;
+    state.viewAsName = btn.dataset.name || null;
+    state.currentView = "dashboard";
+    render();
+  });
+});
+viewRoot.querySelectorAll(".btnViewPay").forEach(btn=>{
+  btn.addEventListener("click", ()=>{
+    state.viewAsUid = btn.dataset.uid;
+    state.viewAsName = btn.dataset.name || null;
+    state.currentView = "payroll";
+    render();
+  });
+});
+viewRoot.querySelectorAll(".btnViewContract").forEach(btn=>{
+  btn.addEventListener("click", ()=>{
+    state.viewAsUid = btn.dataset.uid;
+    state.viewAsName = btn.dataset.name || null;
+    state.currentView = "contract";
+    render();
+  });
+});
+
+// invite form
   el("#inviteForm").addEventListener("submit", async (e)=>{
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
@@ -1023,6 +1203,9 @@ async function render(){
     return;
   }
 
+  // Semaine verrouillée (semaine en cours)
+  state.weekDate = new Date();
+
   // Week input default
   weekDateInput.value = dateToStr(state.weekDate);
 
@@ -1033,18 +1216,36 @@ async function render(){
   if (state.currentView === "admin"){ viewTitle.textContent = "Admin"; viewSubtitle.textContent = "Gestion employés + invites"; }
   if (state.currentView === "settings"){ viewTitle.textContent = "Paramètres"; viewSubtitle.textContent = "Rates + plafonds + salaires"; }
 
-  // prevent access to admin views
+  
+// Mode "consulter un autre employé" : ajuster sous-titre
+if (state.profile?.isAdmin && state.viewAsUid){
+  const who = state.viewAsName ? state.viewAsName : state.viewAsUid;
+  viewSubtitle.textContent = `${viewSubtitle.textContent} • Consultation: ${who}`;
+}
+// prevent access to admin views
   if ((state.currentView === "admin" || state.currentView === "settings") && !state.profile?.isAdmin){
     state.currentView = "dashboard";
   }
 
   try{
-    if (state.currentView === "dashboard") await renderDashboard();
-    else if (state.currentView === "payroll") await renderPayroll();
-    else if (state.currentView === "contract") await renderContract();
+    if (state.currentView === "dashboard") await renderDashboard(state.profile?.isAdmin ? state.viewAsUid : null);
+    else if (state.currentView === "payroll") await renderPayroll(state.profile?.isAdmin ? state.viewAsUid : null);
+    else if (state.currentView === "contract") await renderContract(state.profile?.isAdmin ? state.viewAsUid : null);
     else if (state.currentView === "admin") await renderAdmin();
     else if (state.currentView === "settings") await renderSettings();
     else await renderDashboard();
+
+    // Bind 'Retour à moi' (mode admin)
+    const btnExit = document.querySelector('#btnExitViewAs');
+    if (btnExit){
+      btnExit.addEventListener('click', ()=>{
+        state.viewAsUid = null;
+        state.viewAsName = null;
+        state.currentView = 'dashboard';
+        render();
+      });
+    }
+
   }catch(err){
     console.error(err);
     toast(err?.message || "Erreur d'affichage", "error");
