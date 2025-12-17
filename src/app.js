@@ -46,6 +46,7 @@ function toast(msg, kind="info"){
 function pad2(n){ return String(n).padStart(2,"0"); }
 function dateToStr(d){ return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; }
 function strToDate(s){ const [y,m,dd]=s.split("-").map(Number); return new Date(y, m-1, dd); }
+function addDays(d, n){ const x = new Date(d); x.setDate(x.getDate()+n); return x; }
 
 function startOfWeek(d){
   const x = new Date(d);
@@ -200,6 +201,7 @@ let state = {
   pay: null,
   currentView: "dashboard",
   weekDate: new Date(),
+  adminWeekDate: new Date(),
   // Mode admin: consulter un autre employé
   viewAsUid: null,
   viewAsName: null
@@ -478,13 +480,37 @@ async function renderDashboard(forUid=null){
   const uid = forUid || state.user.uid;
   const profile = forUid ? await loadProfile(uid) : state.profile;
 
-  // Semaine verrouillée : semaine en cours uniquement
-  state.weekDate = new Date();
+  const isAdminViewing = state.profile?.isAdmin && !!forUid;
+  // Employés : semaine en cours uniquement. Admin (consultation d’un autre employé) : navigation semaines (lecture).
+  if (!isAdminViewing){ state.weekDate = new Date(); }
+  if (!state.weekDate){ state.weekDate = new Date(); }
   const s = startOfWeek(state.weekDate);
   const e = endOfWeek(state.weekDate);
 
   const startStr = dateToStr(s);
   const endStr = dateToStr(e);
+
+  const weekNavHtml = isAdminViewing ? `
+    <section class="card">
+      <div class="row">
+        <div>
+          <h2>Navigation semaines</h2>
+          <div class="muted">Consultation des anciennes semaines (lecture seule).</div>
+        </div>
+        <div class="row" style="gap:8px; flex-wrap:wrap; justify-content:flex-end">
+          <button class="btn" id="dashPrevWeek">← Semaine -1</button>
+          <button class="btn" id="dashThisWeek">Semaine actuelle</button>
+          <button class="btn" id="dashNextWeek">Semaine +1 →</button>
+          <label class="muted" style="display:flex; align-items:center; gap:8px">
+            <span>Date</span>
+            <input type="date" id="dashWeekPick" value="${startStr}" />
+          </label>
+        </div>
+      </div>
+      <div class="muted">Semaine du <b>${startStr}</b> au <b>${endStr}</b></div>
+    </section>
+  ` : ``;
+
 
   const days = await loadWeekDays(uid, startStr, endStr);
   const totals = computeTotals(days);
@@ -499,10 +525,12 @@ async function renderDashboard(forUid=null){
     rows.push({ ds, label: d.toLocaleDateString("fr-FR",{weekday:"long", day:"2-digit", month:"2-digit"}), data });
   }
 
-  const canEdit = (uid === state.user.uid) || !!state.profile?.isAdmin;
+  const isCurrentWeek = startStr === currentWeekStartStr();
+  const canEdit = (uid === state.user.uid) && isCurrentWeek;
 
   viewRoot.innerHTML = `
     ${renderViewAsBar()}
+    ${weekNavHtml}
     <section class="card">
       <div class="row">
         <div class="pills">
@@ -584,6 +612,24 @@ async function renderDashboard(forUid=null){
     </section>
   `;
 
+  if (isAdminViewing){
+    const pick = viewRoot.querySelector("#dashWeekPick");
+    const prev = viewRoot.querySelector("#dashPrevWeek");
+    const next = viewRoot.querySelector("#dashNextWeek");
+    const today = viewRoot.querySelector("#dashThisWeek");
+
+    const rerender = ()=>{ state.currentView = "dashboard"; route(); };
+
+    pick?.addEventListener("change", (e)=>{
+      const v = e.target.value;
+      if (v){ state.weekDate = strToDate(v); rerender(); }
+    });
+    prev?.addEventListener("click", ()=>{ state.weekDate = addDays(state.weekDate || new Date(), -7); rerender(); });
+    next?.addEventListener("click", ()=>{ state.weekDate = addDays(state.weekDate || new Date(), 7); rerender(); });
+    today?.addEventListener("click", ()=>{ state.weekDate = new Date(); rerender(); });
+  }
+
+
 // Top 3 de la semaine (visible à tous)
 const weekStartStr = dateToStr(s);
 const top3 = await loadTop3(weekStartStr);
@@ -632,10 +678,35 @@ async function renderPayroll(forUid=null){
   const uid = forUid || state.user.uid;
   const profile = forUid ? await loadProfile(uid) : state.profile;
 
+  const isAdminViewing = state.profile?.isAdmin && !!forUid;
+  if (!isAdminViewing){ state.weekDate = new Date(); }
+  if (!state.weekDate){ state.weekDate = new Date(); }
+
   const s = startOfWeek(state.weekDate);
   const e = endOfWeek(state.weekDate);
   const startStr = dateToStr(s);
   const endStr = dateToStr(e);
+
+  const weekNavHtml = isAdminViewing ? `
+    <section class="card">
+      <div class="row">
+        <div>
+          <h2>Navigation semaines</h2>
+          <div class="muted">Consultation des anciennes semaines (lecture seule).</div>
+        </div>
+        <div class="row" style="gap:8px; flex-wrap:wrap; justify-content:flex-end">
+          <button class="btn" id="payPrevWeek">← Semaine -1</button>
+          <button class="btn" id="payThisWeek">Semaine actuelle</button>
+          <button class="btn" id="payNextWeek">Semaine +1 →</button>
+          <label class="muted" style="display:flex; align-items:center; gap:8px">
+            <span>Date</span>
+            <input type="date" id="payWeekPick" value="${startStr}" />
+          </label>
+        </div>
+      </div>
+      <div class="muted">Semaine du <b>${startStr}</b> au <b>${endStr}</b></div>
+    </section>
+  ` : ``;
 
   const days = await loadWeekDays(uid, startStr, endStr);
   const totals = computeTotals(days);
@@ -643,6 +714,7 @@ async function renderPayroll(forUid=null){
 
   viewRoot.innerHTML = `
     ${renderViewAsBar()}
+    ${weekNavHtml}
     <section class="card">
       <div class="row">
         <div>
@@ -701,11 +773,28 @@ async function renderPayroll(forUid=null){
       <p class="hint">Note : les montants sont calculés automatiquement selon le grade ($/h), les plafonds, et les règles : convois ÷ 2 • sécurité ÷ 7 • évènements × 2.</p>
     </section>
   `;
+
+  if (isAdminViewing){
+    const pick = viewRoot.querySelector("#payWeekPick");
+    const prev = viewRoot.querySelector("#payPrevWeek");
+    const next = viewRoot.querySelector("#payNextWeek");
+    const today = viewRoot.querySelector("#payThisWeek");
+
+    const rerender = ()=>{ state.currentView = "payroll"; route(); };
+
+    pick?.addEventListener("change", (e)=>{ const v = e.target.value; if (v){ state.weekDate = strToDate(v); rerender(); }});
+    prev?.addEventListener("click", ()=>{ state.weekDate = addDays(state.weekDate || new Date(), -7); rerender(); });
+    next?.addEventListener("click", ()=>{ state.weekDate = addDays(state.weekDate || new Date(), 7); rerender(); });
+    today?.addEventListener("click", ()=>{ state.weekDate = new Date(); rerender(); });
+  }
+
 }
 
 async function renderContract(forUid=null){
   const uid = forUid || state.user.uid;
   const profile = forUid ? await loadProfile(uid) : state.profile;
+
+  const weekNavHtml = ``;
 
   const today = dateToStr(new Date());
   const autoTpl = contractTemplate({
@@ -723,6 +812,7 @@ async function renderContract(forUid=null){
 
   viewRoot.innerHTML = `
     ${renderViewAsBar()}
+    ${weekNavHtml}
     <section class="card">
       <div class="row">
         <div>
@@ -830,26 +920,105 @@ async function renderAdmin(){
   const employees = [];
   snap.forEach(d=>employees.push({ uid: d.id, ...d.data() }));
 
-  const weekStartStr = currentWeekStartStr();
+  // Semaine sélectionnée (admin) — navigable
+  const wd = state.adminWeekDate || new Date();
+  const wsDate = startOfWeek(wd);
+  const weDate = endOfWeek(wd);
+  const weekStartStr = dateToStr(wsDate);
+  const weekEndStr = dateToStr(weDate);
   const weekStats = new Map();
   await Promise.all(employees.map(async (emp)=>{
+    // 1) Essayez de lire le résumé (si l’employé l’a déjà généré)
     try{
       const ref = firebase.doc(db, "weeks", weekStartStr, "public", emp.uid);
       const s = await firebase.getDoc(ref);
-      weekStats.set(emp.uid, s.exists() ? s.data() : { convoys:0, securityChecks:0, securedEvents:0 });
-    }catch(_e){
-      weekStats.set(emp.uid, { convoys:0, securityChecks:0, securedEvents:0 });
+      if (s.exists()){
+        weekStats.set(emp.uid, s.data());
+        return;
+      }
+    }catch(_e){ /* ignore */ }
+
+    // 2) Fallback : recalcul à partir des workDays (permet de consulter les anciennes semaines)
+    try{
+      const days = await loadWeekDays(emp.uid, weekStartStr, weekEndStr);
+      const totals = computeTotals(days);
+      await upsertPublicWeek(emp.uid, emp, totals, weekStartStr);
+      const { hoursTotal } = computeWorkHours(totals);
+      weekStats.set(emp.uid, {
+        uid: emp.uid,
+        name: emp.name || "—",
+        rank: emp.rank || "—",
+        status: emp.status || "—",
+        convoys: num(totals.convoys),
+        securityChecks: num(totals.securityChecks),
+        securedEvents: num(totals.securedEvents),
+        score: hoursTotal
+      });
+    }catch(_e2){
+      weekStats.set(emp.uid, { convoys:0, securityChecks:0, securedEvents:0, score:0 });
     }
   }));
 
   const rowsData = employees.map(emp=>{
     const ws = weekStats.get(emp.uid) || { convoys:0, securityChecks:0, securedEvents:0 };
     const totals = { convoys:num(ws.convoys), securityChecks:num(ws.securityChecks), securedEvents:num(ws.securedEvents) };
-    const pr = computePay({ rank: emp.rank || "—", totals, pay: state.pay });
-    return { emp, ws, totals, pr };
+    let pr = computePay({ rank: emp.rank || "—", totals, pay: state.pay });
+
+    const payable = (emp.status || "Actif") === "Actif";
+    if (!payable){
+      pr = { ...pr, convoyPay:0, securityPay:0, prime:0, eventPay:0, total:0, fixedWeekly:0 };
+    }
+    return { emp, ws, totals, pr, payable };
   });
 
+  const totalToPay = rowsData.reduce((a,r)=> a + (r.payable ? num(r.pr.total) : 0), 0);
+  const totalPrime = rowsData.reduce((a,r)=> a + (r.payable ? num(r.pr.prime||0) : 0), 0);
+  const totalEvents = rowsData.reduce((a,r)=> a + (r.payable ? num(r.pr.eventPay||0) : 0), 0);
+  const totalHours = rowsData.reduce((a,r)=> a + (r.payable ? num(r.pr.hoursTotal||0) : 0), 0);
+  const paidCount = rowsData.filter(r=>r.payable).length;
+
   viewRoot.innerHTML = `
+    <section class="card">
+      <div class="row">
+        <div>
+          <h2>Dashboard admin — Finance</h2>
+          <p class="muted">Semaine du <b>${weekStartStr}</b> au <b>${weekEndStr}</b>. (Lecture : anciennes semaines OK — saisie verrouillée hors semaine en cours.)</p>
+        </div>
+        <div class="row" style="gap:8px; flex-wrap:wrap; justify-content:flex-end">
+          <button class="btn" id="admPrevWeek">← Semaine -1</button>
+          <button class="btn" id="admThisWeek">Semaine actuelle</button>
+          <button class="btn" id="admNextWeek">Semaine +1 →</button>
+          <label class="muted" style="display:flex; align-items:center; gap:8px">
+            <span>Date</span>
+            <input type="date" id="admWeekPick" value="${weekStartStr}" />
+          </label>
+        </div>
+      </div>
+
+      <div class="kpis">
+        <div class="kpi">
+          <div class="label">À retirer du coffre</div>
+          <div class="value">${money(totalToPay)}</div>
+          <div class="muted">${paidCount} employé(s) payés</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Prime (convois + sécurité)</div>
+          <div class="value">${money(totalPrime)}</div>
+          <div class="muted">plafonds appliqués</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Évènements</div>
+          <div class="value">${money(totalEvents)}</div>
+          <div class="muted">pas de max</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Heures totales</div>
+          <div class="value">${hoursFmt(totalHours)}</div>
+          <div class="muted">convois ÷2 • sécu ÷7 • events ×2</div>
+        </div>
+      </div>
+    </section>
+
     <section class="card">
       <div class="row">
         <div>
@@ -912,7 +1081,9 @@ async function renderAdmin(){
       <th>Sécurité</th>
       <th>Events</th>
       <th>Heures</th>
-      <th>Total $</th>
+      <th>Prime</th>
+      <th>Events</th>
+      <th>À payer</th>
       <th style="width:340px"></th>
     </tr>
   </thead>
@@ -935,6 +1106,8 @@ async function renderAdmin(){
         <td>${num(row.totals.securityChecks)}</td>
         <td>${num(row.totals.securedEvents)}</td>
         <td>${hoursFmt(row.pr.hoursTotal || 0)}</td>
+        <td>${money(row.pr.prime || 0)}</td>
+        <td>${money(row.pr.eventPay || 0)}</td>
         <td><b>${money(row.pr.total)}</b></td>
         <td class="noPrint">
           <div class="actions">
@@ -953,11 +1126,40 @@ async function renderAdmin(){
     <section class="card hidden" id="empEditCard"></section>
   `;
 
+
+  // navigation semaines (admin finance)
+  const weekPick = viewRoot.querySelector("#admWeekPick");
+  const prevBtn = viewRoot.querySelector("#admPrevWeek");
+  const nextBtn = viewRoot.querySelector("#admNextWeek");
+  const thisBtn = viewRoot.querySelector("#admThisWeek");
+  if (weekPick){
+    weekPick.addEventListener("change", (e)=>{
+      const v = e.target.value;
+      if (v){
+        state.adminWeekDate = strToDate(v);
+        renderAdmin();
+      }
+    });
+  }
+  prevBtn?.addEventListener("click", ()=>{
+    state.adminWeekDate = addDays(state.adminWeekDate || new Date(), -7);
+    renderAdmin();
+  });
+  nextBtn?.addEventListener("click", ()=>{
+    state.adminWeekDate = addDays(state.adminWeekDate || new Date(), 7);
+    renderAdmin();
+  });
+  thisBtn?.addEventListener("click", ()=>{
+    state.adminWeekDate = new Date();
+    renderAdmin();
+  });
+
   // actions: consulter tableau de bord / bulletin / contrat
 viewRoot.querySelectorAll(".btnViewDash").forEach(btn=>{
   btn.addEventListener("click", ()=>{
     state.viewAsUid = btn.dataset.uid;
     state.viewAsName = btn.dataset.name || null;
+    state.weekDate = new Date();
     state.currentView = "dashboard";
     render();
   });
@@ -966,6 +1168,7 @@ viewRoot.querySelectorAll(".btnViewPay").forEach(btn=>{
   btn.addEventListener("click", ()=>{
     state.viewAsUid = btn.dataset.uid;
     state.viewAsName = btn.dataset.name || null;
+    state.weekDate = new Date();
     state.currentView = "payroll";
     render();
   });
@@ -974,6 +1177,7 @@ viewRoot.querySelectorAll(".btnViewContract").forEach(btn=>{
   btn.addEventListener("click", ()=>{
     state.viewAsUid = btn.dataset.uid;
     state.viewAsName = btn.dataset.name || null;
+    state.weekDate = new Date();
     state.currentView = "contract";
     render();
   });
@@ -1161,6 +1365,47 @@ async function renderSettings(){
 
   viewRoot.innerHTML = `
     <section class="card">
+      <div class="row">
+        <div>
+          <h2>Dashboard admin — Finance</h2>
+          <p class="muted">Semaine du <b>${weekStartStr}</b> au <b>${weekEndStr}</b>. (Lecture : anciennes semaines OK — saisie verrouillée hors semaine en cours.)</p>
+        </div>
+        <div class="row" style="gap:8px; flex-wrap:wrap; justify-content:flex-end">
+          <button class="btn" id="admPrevWeek">← Semaine -1</button>
+          <button class="btn" id="admThisWeek">Semaine actuelle</button>
+          <button class="btn" id="admNextWeek">Semaine +1 →</button>
+          <label class="muted" style="display:flex; align-items:center; gap:8px">
+            <span>Date</span>
+            <input type="date" id="admWeekPick" value="${weekStartStr}" />
+          </label>
+        </div>
+      </div>
+
+      <div class="kpis">
+        <div class="kpi">
+          <div class="label">À retirer du coffre</div>
+          <div class="value">${money(totalToPay)}</div>
+          <div class="muted">${paidCount} employé(s) payés</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Prime (convois + sécurité)</div>
+          <div class="value">${money(totalPrime)}</div>
+          <div class="muted">plafonds appliqués</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Évènements</div>
+          <div class="value">${money(totalEvents)}</div>
+          <div class="muted">pas de max</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Heures totales</div>
+          <div class="value">${hoursFmt(totalHours)}</div>
+          <div class="muted">convois ÷2 • sécu ÷7 • events ×2</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
       <h2>Paramètres de paie</h2>
       <p class="muted">Configure les plafonds + le taux $/h par grade. (Règles fixes : convois ÷ 2 • sécurité ÷ 7 • évènements × 2).</p>
 
@@ -1261,6 +1506,47 @@ async function renderMissingProfile(){
   viewSubtitle.textContent = "Rattache ton compte à un employé via un code d’invitation";
 
   viewRoot.innerHTML = `
+    <section class="card">
+      <div class="row">
+        <div>
+          <h2>Dashboard admin — Finance</h2>
+          <p class="muted">Semaine du <b>${weekStartStr}</b> au <b>${weekEndStr}</b>. (Lecture : anciennes semaines OK — saisie verrouillée hors semaine en cours.)</p>
+        </div>
+        <div class="row" style="gap:8px; flex-wrap:wrap; justify-content:flex-end">
+          <button class="btn" id="admPrevWeek">← Semaine -1</button>
+          <button class="btn" id="admThisWeek">Semaine actuelle</button>
+          <button class="btn" id="admNextWeek">Semaine +1 →</button>
+          <label class="muted" style="display:flex; align-items:center; gap:8px">
+            <span>Date</span>
+            <input type="date" id="admWeekPick" value="${weekStartStr}" />
+          </label>
+        </div>
+      </div>
+
+      <div class="kpis">
+        <div class="kpi">
+          <div class="label">À retirer du coffre</div>
+          <div class="value">${money(totalToPay)}</div>
+          <div class="muted">${paidCount} employé(s) payés</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Prime (convois + sécurité)</div>
+          <div class="value">${money(totalPrime)}</div>
+          <div class="muted">plafonds appliqués</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Évènements</div>
+          <div class="value">${money(totalEvents)}</div>
+          <div class="muted">pas de max</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Heures totales</div>
+          <div class="value">${hoursFmt(totalHours)}</div>
+          <div class="muted">convois ÷2 • sécu ÷7 • events ×2</div>
+        </div>
+      </div>
+    </section>
+
     <section class="card">
       <h2>Profil employé non trouvé</h2>
       <p class="muted">Ton compte est bien connecté : <b>${escapeHtml(state.user?.email || "—")}</b></p>
