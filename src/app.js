@@ -1,6 +1,14 @@
 import { auth, db, firebase } from "./firebase.js";
 import { UI_ADMIN_EMAILS, DEFAULT_PAY_SETTINGS } from "./config.js";
 
+// ---- Build / cache-bust ----
+const BUILD = "v10.2";
+try{
+  const el = document.getElementById("buildTag");
+  if (el) el.textContent = BUILD;
+}catch(e){}
+
+
 const RANKS = [
   "Directeur",
   "Co-directeur",
