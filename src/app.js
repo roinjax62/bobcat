@@ -1385,6 +1385,7 @@ async function renderSettings(){
   }
 
   const p = state.pay;
+  const canEditSettings = (state.profile?.rank === "Directeur");
 
   const wd = state.adminWeekDate || new Date();
   const wsDate = startOfWeek(wd);
@@ -1540,10 +1541,15 @@ async function renderSettings(){
           </div>
         </div>
       </form>
-
-      <div class="hint">Après sauvegarde, tous les calculs se mettent à jour automatiquement.</div>
     </section>
   `;
+
+
+const settingsForm = el("#settingsForm");
+if (!canEditSettings){
+  settingsForm.querySelectorAll("input, select, textarea, button").forEach(n=>{ n.disabled = true; });
+  return;
+}
 
   el("#settingsForm").addEventListener("submit", async (e)=>{
     e.preventDefault();
@@ -1689,19 +1695,24 @@ async function render(){
   // Week input default
   weekDateInput.value = dateToStr(state.weekDate);
 
-  // titles
-  if (state.currentView === "dashboard"){ viewTitle.textContent = "Tableau de bord"; viewSubtitle.textContent = "Saisie par jour + récap hebdomadaire"; }
-  if (state.currentView === "payroll"){ viewTitle.textContent = "Bulletin"; viewSubtitle.textContent = "Récap hebdo imprimable"; }
-  if (state.currentView === "contract"){ viewTitle.textContent = "Contrat"; viewSubtitle.textContent = "CDI généré automatiquement"; }
-  if (state.currentView === "admin"){ viewTitle.textContent = "Admin"; viewSubtitle.textContent = "Gestion employés + invites"; }
-  if (state.currentView === "settings"){ viewTitle.textContent = "Paramètres"; viewSubtitle.textContent = "Rates + plafonds + salaires"; }
+  // titles (UI épurée)
+  if (state.currentView === "dashboard"){ viewTitle.textContent = "Tableau de bord"; }
+  if (state.currentView === "payroll"){ viewTitle.textContent = "Bulletin"; }
+  if (state.currentView === "contract"){ viewTitle.textContent = "Contrat"; }
+  if (state.currentView === "admin"){ viewTitle.textContent = "Admin"; }
+  if (state.currentView === "settings"){ viewTitle.textContent = "Paramètres"; }
+  viewSubtitle.textContent = "";
 
-  
 // Mode "consulter un autre employé" : ajuster sous-titre
+
 if (state.profile?.isAdmin && state.viewAsUid){
   const who = state.viewAsName ? state.viewAsName : state.viewAsUid;
-  viewSubtitle.textContent = `${viewSubtitle.textContent} • Consultation: ${who}`;
+  const base = (viewSubtitle.textContent || "").trim();
+  viewSubtitle.textContent = base ? `${base} • Consultation: ${who}` : `Consultation: ${who}`;
 }
+// afficher/masquer sous-titre selon contenu
+viewSubtitle.style.display = (viewSubtitle.textContent || "").trim() ? "" : "none";
+
 // prevent access to admin views
   if ((state.currentView === "admin" || state.currentView === "settings") && !state.profile?.isAdmin){
     state.currentView = "dashboard";
