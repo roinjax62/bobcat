@@ -2,7 +2,7 @@ import { auth, db, firebase } from "./firebase.js";
 import { UI_ADMIN_EMAILS, DEFAULT_PAY_SETTINGS } from "./config.js";
 
 // ---- Build / cache-bust ----
-const BUILD = "v10.2";
+const BUILD = "v10.3";
 try{
   const el = document.getElementById("buildTag");
   if (el) el.textContent = BUILD;
@@ -1376,6 +1376,55 @@ async function renderSettings(){
   const weDate = endOfWeek(wd);
   const weekStartStr = dateToStr(wsDate);
   const weekEndStr = dateToStr(weDate);
+
+  // Aperçu des totaux pour la semaine sélectionnée (admin)
+  let totalToPay = 0, totalPrime = 0, totalEvents = 0, totalHours = 0, paidCount = 0;
+  try{
+    const employeesCol = firebase.collection(db, "employees");
+    const qEmp = firebase.query(employeesCol, firebase.orderBy("name"));
+    const empSnap = await firebase.getDocs(qEmp);
+    const employees = empSnap.docs.map(d=>({ uid: d.id, ...d.data() }));
+
+    const weekStats = new Map();
+    await Promise.all(employees.map(async (emp)=>{
+      // 1) résumé public si déjà calculé
+      try{
+        const ref = firebase.doc(db, "weeks", weekStartStr, "public", emp.uid);
+        const s = await firebase.getDoc(ref);
+        if (s.exists()){
+          weekStats.set(emp.uid, s.data());
+          return;
+        }
+      }catch(_e){ /* ignore */ }
+
+      // 2) fallback: recalcul depuis workDays
+      try{
+        const days = await loadWeekDays(emp.uid, weekStartStr, weekEndStr);
+        const totals = computeTotals(days);
+        await upsertPublicWeek(emp.uid, emp, totals, weekStartStr);
+        weekStats.set(emp.uid, totals);
+      }catch(_e2){
+        weekStats.set(emp.uid, { convoys:0, securityChecks:0, securedEvents:0 });
+      }
+    }));
+
+    const rows = employees.map(emp=>{
+      const ws = weekStats.get(emp.uid) || { convoys:0, securityChecks:0, securedEvents:0 };
+      const totals = { convoys:num(ws.convoys), securityChecks:num(ws.securityChecks), securedEvents:num(ws.securedEvents) };
+      let pr = computePay({ rank: emp.rank || "—", totals, pay: state.pay });
+      const payable = (emp.status || "Actif") === "Actif";
+      if (!payable){
+        pr = { ...pr, convoyPay:0, securityPay:0, prime:0, eventPay:0, total:0, fixedWeekly:0, hoursTotal:0 };
+      }
+      return { payable, pr };
+    });
+
+    totalToPay = rows.reduce((a,r)=> a + (r.payable ? num(r.pr.total) : 0), 0);
+    totalPrime = rows.reduce((a,r)=> a + (r.payable ? num(r.pr.prime||0) : 0), 0);
+    totalEvents = rows.reduce((a,r)=> a + (r.payable ? num(r.pr.eventPay||0) : 0), 0);
+    totalHours = rows.reduce((a,r)=> a + (r.payable ? num(r.pr.hoursTotal||0) : 0), 0);
+    paidCount = rows.filter(r=>r.payable).length;
+  }catch(_e){ /* ignore preview errors */ }
 
   viewRoot.innerHTML = `
     <section class="card">
