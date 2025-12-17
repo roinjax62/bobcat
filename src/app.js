@@ -65,6 +65,12 @@ function money(n){
   if (n == null || Number.isNaN(n)) return "—";
   return (Math.round(n)).toLocaleString("fr-FR") + " $";
 }
+function hoursFmt(h){
+  const x = Number(h);
+  if (!Number.isFinite(x)) return "0";
+  return x.toLocaleString("fr-FR", { maximumFractionDigits: 2 });
+}
+
 function num(v){ const x = Number(v); return Number.isFinite(x) ? x : 0; }
 
 function escapeHtml(s=""){
@@ -82,24 +88,35 @@ async function setPaySettings(settings){
   await firebase.setDoc(ref, settings, { merge: true });
 }
 
+function computeWorkHours(totals){
+  const hoursConvoy = num(totals.convoys) / 2;      // 2 convois = 1h
+  const hoursSecurity = num(totals.securityChecks) / 7; // 7 contrôles = 1h
+  const hoursEvent = num(totals.securedEvents) * 2; // 1 event = 2h
+  const hoursTotal = hoursConvoy + hoursSecurity + hoursEvent;
+  return { hoursConvoy, hoursSecurity, hoursEvent, hoursTotal };
+}
+
 function computePay({rank, totals, pay}){
-  const hourRate = (pay.baseSalaries?.[rank] ?? 0) || 0; // $/heure (convois) selon le grade
-  const hours = totals.convoys / 2; // règle demandée : 2 convois = 1h
+  const hourRate = (pay.baseSalaries?.[rank] ?? 0) || 0; // $/heure selon le grade
+  const { hoursConvoy, hoursSecurity, hoursEvent, hoursTotal } = computeWorkHours(totals);
 
   // Directeur / Co-directeur : fixe hebdo
   if (rank === "Directeur" || rank === "Co-directeur"){
     const fixed = pay.directorWeekly ?? 8500000;
-    const perHour = hours > 0 ? fixed / hours : null;
+    const perHour = hoursTotal > 0 ? fixed / hoursTotal : null;
     return {
       hourRate, base: fixed,
       convoyPay: 0, securityPay: 0, prime: 0, eventPay: 0,
-      total: fixed, hours, perHour, fixedWeekly: fixed
+      total: fixed,
+      hoursConvoy, hoursSecurity, hoursEvent, hoursTotal,
+      perHour, fixedWeekly: fixed
     };
   }
 
-  // Convois : rémunération basée sur le taux horaire du grade
-  const convoyPayRaw = hours * hourRate;
-  const securityPayRaw = totals.securityChecks * pay.securityRate;
+  // Convois / Sécurité / Events : conversion en heures, puis taux horaire du grade
+  const convoyPayRaw = hoursConvoy * hourRate;
+  const securityPayRaw = hoursSecurity * hourRate;
+  const eventPayRaw = hoursEvent * hourRate; // pas de max
 
   const convoyPay = Math.min(convoyPayRaw, pay.convoyMax);
   const securityPay = Math.min(securityPayRaw, pay.securityMax);
@@ -107,13 +124,13 @@ function computePay({rank, totals, pay}){
   // Prime = convois + sécurité (max 8.5M par défaut)
   const prime = Math.min(convoyPay + securityPay, pay.primeMax);
 
-  const eventPay = totals.securedEvents * pay.eventRate; // pas de max
+  const eventPay = eventPayRaw;
 
   const total = prime + eventPay;
 
-  const perHour = hours > 0 ? total / hours : null;
+  const perHour = hoursTotal > 0 ? total / hoursTotal : null;
 
-  return { hourRate, base: 0, convoyPay, securityPay, prime, eventPay, total, hours, perHour };
+  return { hourRate, base: 0, convoyPay, securityPay, prime, eventPay, total, hoursConvoy, hoursSecurity, hoursEvent, hoursTotal, perHour };
 }
 
 function contractTemplate({name, birth, nationality, dateStr, rank}){
@@ -388,7 +405,8 @@ function isCurrentWeekSelected(){
 
 async function upsertPublicWeek(uid, profile, totals, weekStartStr){
   try{
-    const score = num(totals.convoys) + num(totals.securityChecks) + num(totals.securedEvents);
+    const { hoursConvoy, hoursSecurity, hoursEvent, hoursTotal } = computeWorkHours(totals);
+    const score = hoursTotal;
     const ref = firebase.doc(db, "weeks", weekStartStr, "public", uid);
     await firebase.setDoc(ref, {
       uid,
@@ -398,6 +416,10 @@ async function upsertPublicWeek(uid, profile, totals, weekStartStr){
       convoys: num(totals.convoys),
       securityChecks: num(totals.securityChecks),
       securedEvents: num(totals.securedEvents),
+      hoursConvoy,
+      hoursSecurity,
+      hoursEvent,
+      hoursTotal,
       score,
       updatedAt: firebase.serverTimestamp()
     }, { merge: true });
@@ -478,10 +500,10 @@ async function renderDashboard(forUid=null){
       <div class="panel" id="top3Panel"></div>
 
       <div class="kpis">
-        <div class="kpi"><div class="label">Convois (hebdo)</div><div class="value">${totals.convoys}</div><div class="sub">Heures = convois / 2 → <b>${payResult.hours}</b> h</div></div>
-        <div class="kpi"><div class="label">Contrôles sécurité (hebdo)</div><div class="value">${totals.securityChecks}</div><div class="sub">Plafond sécurité: ${money(state.pay.securityMax)}</div></div>
-        <div class="kpi"><div class="label">Évènements sécurisés (hebdo)</div><div class="value">${totals.securedEvents}</div><div class="sub">Pas de max</div></div>
-        <div class="kpi"><div class="label">Total estimé</div><div class="value">${money(payResult.total)}</div><div class="sub">Rapport $/h: <b>${payResult.perHour ? money(payResult.perHour) + "/h" : "—"}</b></div></div>
+        <div class="kpi"><div class="label">Convois (hebdo)</div><div class="value">${totals.convoys}</div><div class="sub">Heures = convois / 2 → <b>${hoursFmt(payResult.hoursConvoy)}</b> h</div></div>
+        <div class="kpi"><div class="label">Contrôles sécurité (hebdo)</div><div class="value">${totals.securityChecks}</div><div class="sub">Heures = contrôles / 7 → <b>${hoursFmt(payResult.hoursSecurity)}</b> h • Plafond: ${money(state.pay.securityMax)}</div></div>
+        <div class="kpi"><div class="label">Évènements sécurisés (hebdo)</div><div class="value">${totals.securedEvents}</div><div class="sub">Heures = events × 2 → <b>${hoursFmt(payResult.hoursEvent)}</b> h • Pas de max</div></div>
+        <div class="kpi"><div class="label">Total estimé</div><div class="value">${money(payResult.total)}</div><div class="sub">Total heures: <b>${hoursFmt(payResult.hoursTotal)}</b> h • Rapport: <b>${payResult.perHour ? money(payResult.perHour) + "/h" : "—"}</b></div></div>
       </div>
     </section>
 
@@ -530,7 +552,7 @@ async function renderDashboard(forUid=null){
           <div class="muted">Prime max (convois + sécurité) : <b>${money(state.pay.primeMax)}</b></div>
           <div class="muted">Prime réelle : <b>${money(payResult.prime)}</b></div>
           <div class="muted">Total estimé : <b>${money(payResult.total)}</b></div>
-          <div class="muted">Heures : <b>${payResult.hours}</b> h • Rapport : <b>${payResult.perHour ? money(payResult.perHour)+"/h" : "—"}</b></div>
+          <div class="muted">Heures : <b>${hoursFmt(payResult.hoursTotal)}</b> h • Rapport : <b>${payResult.perHour ? money(payResult.perHour)+"/h" : "—"}</b></div>
         </div>
 
         <div class="panel" style="flex:1">
@@ -552,7 +574,7 @@ const topHtml = top3.length ? `
     ${top3.map(x=>`
       <li>
         <b>${escapeHtml(x.name||"—")}</b>
-        <span class="muted">• Convois: ${num(x.convoys)} • Sécurité: ${num(x.securityChecks)} • Events: ${num(x.securedEvents)}</span>
+        <span class="muted">• Convois: ${num(x.convoys)} • Sécurité: ${num(x.securityChecks)} • Events: ${num(x.securedEvents)} • Heures: ${hoursFmt(x.hoursTotal || 0)} h</span>
       </li>
     `).join("")}
   </ol>
@@ -623,7 +645,7 @@ async function renderPayroll(forUid=null){
           </div>
           <div class="pills">
             <span class="pill neutral">Grade: <b>${escapeHtml(profile.rank)}</b></span>
-            <span class="pill neutral">Taux $/h (convois): <b>${money((state.pay.baseSalaries?.[profile.rank] ?? 0) || 0)}</b></span>
+            <span class="pill neutral">Taux grade $/h : <b>${money((state.pay.baseSalaries?.[profile.rank] ?? 0) || 0)}</b></span>
             <span class="pill ${profile.status==="Actif"?"good":"bad"}">Statut: <b>${escapeHtml(profile.status)}</b></span>
           </div>
         </div>
@@ -640,18 +662,24 @@ async function renderPayroll(forUid=null){
           </tr>
         </thead>
         <tbody>
-          <tr><td><b>Salaire de base</b></td><td>Selon grade (${escapeHtml(profile.rank)})</td><td style="text-align:right">${money(payResult.base)}</td></tr>
-          <tr><td><b>Convois</b></td><td>${totals.convoys} × ${money(state.pay.convoyRate)} (max ${money(state.pay.convoyMax)})</td><td style="text-align:right">${money(payResult.convoyPay)}</td></tr>
-          <tr><td><b>Sécurité</b></td><td>${totals.securityChecks} × ${money(state.pay.securityRate)} (max ${money(state.pay.securityMax)})</td><td style="text-align:right">${money(payResult.securityPay)}</td></tr>
-          <tr><td><b>Prime (Convois + Sécurité)</b></td><td>Max ${money(state.pay.primeMax)}</td><td style="text-align:right">${money(payResult.prime)}</td></tr>
-          <tr><td><b>Évènements</b></td><td>${totals.securedEvents} × ${money(state.pay.eventRate)} (pas de max)</td><td style="text-align:right">${money(payResult.eventPay)}</td></tr>
-          <tr><td><b>Total heures</b></td><td>Convois / 2</td><td style="text-align:right">${payResult.hours} h</td></tr>
-          <tr><td><b>Rapport $/heure</b></td><td>Total / heures</td><td style="text-align:right"><b>${payResult.perHour ? money(payResult.perHour)+"/h" : "—"}</b></td></tr>
-          <tr><td><b>TOTAL À PAYER</b></td><td></td><td style="text-align:right"><b>${money(payResult.total)}</b></td></tr>
+          ${(profile.rank==="Directeur"||profile.rank==="Co-directeur") ? `
+            <tr><td><b>Salaire fixe hebdo</b></td><td>${escapeHtml(profile.rank)} (fixe)</td><td style="text-align:right">${money(payResult.base)}</td></tr>
+            <tr><td><b>Total heures (activité)</b></td><td>Convois/2 + Sécurité/7 + Events×2</td><td style="text-align:right">${hoursFmt(payResult.hoursTotal)} h</td></tr>
+            <tr><td><b>Rapport $/heure</b></td><td>Fixe / heures</td><td style="text-align:right"><b>${payResult.perHour ? money(payResult.perHour)+"/h" : "—"}</b></td></tr>
+            <tr><td><b>TOTAL À PAYER</b></td><td></td><td style="text-align:right"><b>${money(payResult.total)}</b></td></tr>
+          ` : `
+            <tr><td><b>Convois</b></td><td>${totals.convoys} convois → ${hoursFmt(payResult.hoursConvoy)} h (÷2) × ${money(payResult.hourRate)}/h (max ${money(state.pay.convoyMax)})</td><td style="text-align:right">${money(payResult.convoyPay)}</td></tr>
+            <tr><td><b>Sécurité</b></td><td>${totals.securityChecks} contrôles → ${hoursFmt(payResult.hoursSecurity)} h (÷7) × ${money(payResult.hourRate)}/h (max ${money(state.pay.securityMax)})</td><td style="text-align:right">${money(payResult.securityPay)}</td></tr>
+            <tr><td><b>Prime (Convois + Sécurité)</b></td><td>Max ${money(state.pay.primeMax)}</td><td style="text-align:right">${money(payResult.prime)}</td></tr>
+            <tr><td><b>Évènements</b></td><td>${totals.securedEvents} events → ${hoursFmt(payResult.hoursEvent)} h (×2) × ${money(payResult.hourRate)}/h (pas de max)</td><td style="text-align:right">${money(payResult.eventPay)}</td></tr>
+            <tr><td><b>Total heures</b></td><td>Convois/2 + Sécurité/7 + Events×2</td><td style="text-align:right">${hoursFmt(payResult.hoursTotal)} h</td></tr>
+            <tr><td><b>Rapport $/heure</b></td><td>Total / heures</td><td style="text-align:right"><b>${payResult.perHour ? money(payResult.perHour)+"/h" : "—"}</b></td></tr>
+            <tr><td><b>TOTAL À PAYER</b></td><td></td><td style="text-align:right"><b>${money(payResult.total)}</b></td></tr>
+          `}
         </tbody>
       </table>
 
-      <p class="hint">Note : les montants sont calculés automatiquement selon les paramètres (rates + plafonds) et la règle heures = convois / 2.</p>
+      <p class="hint">Note : les montants sont calculés automatiquement selon le grade ($/h), les plafonds, et les règles : convois ÷ 2 • sécurité ÷ 7 • évènements × 2.</p>
     </section>
   `;
 }
@@ -661,7 +689,7 @@ async function renderContract(forUid=null){
   const profile = forUid ? await loadProfile(uid) : state.profile;
 
   const today = dateToStr(new Date());
-  const tpl = contractTemplate({
+  const autoTpl = contractTemplate({
     name: profile.name || "$Name",
     birth: profile.birth || "$Birth",
     nationality: profile.nationality || "américaine / mexicaine",
@@ -669,13 +697,18 @@ async function renderContract(forUid=null){
     rank: profile.rank || "novice"
   });
 
+  const stored = (typeof profile.contractText === "string" && profile.contractText.trim().length) ? profile.contractText : null;
+  const tpl = stored || autoTpl;
+
+  const canEdit = !!state.profile?.isAdmin; // 🔒 seul admin peut modifier les contrats (même le sien)
+
   viewRoot.innerHTML = `
     ${renderViewAsBar()}
     <section class="card">
       <div class="row">
         <div>
-          <h2>Contrat CDI (auto)</h2>
-          <div class="muted">Généré à partir du profil employé</div>
+          <h2>Contrat CDI</h2>
+          <div class="muted">Employé : <b>${escapeHtml(profile.name || "—")}</b> • Généré le <b>${today}</b>${stored ? " • <b>Version admin</b>" : ""}</div>
         </div>
         <div class="noPrint">
           <button class="primary" onclick="window.print()">Imprimer / PDF</button>
@@ -684,27 +717,80 @@ async function renderContract(forUid=null){
 
       <hr class="sep" />
 
-      <div class="panel">
-        <label>Contrat (modifiable avant impression)
-          <textarea id="contractText"></textarea>
-        </label>
-        <div class="row noPrint">
-          <button id="btnCopyContract">Copier</button>
-          <button class="primary" onclick="window.print()">Imprimer</button>
-        </div>
+      <div id="contractDoc" class="contractDoc"></div>
+
+      <div class="row noPrint" style="margin-top:10px">
+        <button id="btnCopyContract">Copier</button>
+        ${canEdit ? `<button id="btnToggleContractEdit">Éditer (admin)</button>` : ``}
       </div>
+
+      ${canEdit ? `
+        <div class="panel noPrint hidden" id="contractEditPanel" style="margin-top:12px">
+          <div class="row">
+            <div>
+              <h2 style="margin:0">Édition admin</h2>
+              <div class="muted">Ici tu peux personnaliser le contrat (stocké en base pour cet employé).</div>
+            </div>
+            <div>
+              <button id="btnCloseContractEdit">Fermer</button>
+            </div>
+          </div>
+
+          <label>Contrat (admin)
+            <textarea id="contractEditor" class="contractEditor" spellcheck="false"></textarea>
+          </label>
+
+          <div class="row" style="margin-top:8px">
+            <button class="primary" id="btnSaveContract">Enregistrer</button>
+            <button id="btnResetContract">Revenir au contrat auto</button>
+          </div>
+        </div>
+      ` : ``}
     </section>
   `;
 
-  // Mettre le texte (évite tout scroll interne)
-  el("#contractText").textContent = tpl;
+  const docEl = el("#contractDoc");
+  docEl.textContent = tpl;
 
-  
   el("#btnCopyContract").addEventListener("click", async ()=>{
-    const t = el("#contractText").textContent;
-    await navigator.clipboard.writeText(t);
+    await navigator.clipboard.writeText(docEl.textContent || "");
     toast("Contrat copié ✅");
   });
+
+  if (canEdit){
+    const panel = el("#contractEditPanel");
+    const editor = el("#contractEditor");
+    const open = ()=>{ panel.classList.remove("hidden"); editor.value = docEl.textContent || ""; editor.focus(); };
+    const close = ()=> panel.classList.add("hidden");
+
+    el("#btnToggleContractEdit").addEventListener("click", open);
+    el("#btnCloseContractEdit").addEventListener("click", close);
+
+    el("#btnSaveContract").addEventListener("click", async ()=>{
+      const text = String(editor.value || "").trim();
+      try{
+        const ref = firebase.doc(db, "employees", uid);
+        await firebase.updateDoc(ref, { contractText: text, contractUpdatedAt: firebase.serverTimestamp() });
+        docEl.textContent = text || autoTpl;
+        toast("Contrat sauvegardé ✅");
+        close();
+      }catch(err){
+        toast(err?.message || "Erreur sauvegarde contrat", "error");
+      }
+    });
+
+    el("#btnResetContract").addEventListener("click", async ()=>{
+      try{
+        const ref = firebase.doc(db, "employees", uid);
+        await firebase.updateDoc(ref, { contractText: firebase.deleteField(), contractUpdatedAt: firebase.serverTimestamp() });
+        docEl.textContent = autoTpl;
+        editor.value = autoTpl;
+        toast("Contrat réinitialisé ✅");
+      }catch(err){
+        toast(err?.message || "Erreur reset contrat", "error");
+      }
+    });
+  }
 }
 
 async function renderAdmin(){
@@ -825,7 +911,7 @@ async function renderAdmin(){
         <td>${num(row.totals.convoys)}</td>
         <td>${num(row.totals.securityChecks)}</td>
         <td>${num(row.totals.securedEvents)}</td>
-        <td>${(row.pr.hours||0).toFixed(1)}</td>
+        <td>${hoursFmt(row.pr.hoursTotal || 0)}</td>
         <td><b>${money(row.pr.total)}</b></td>
         <td class="noPrint">
           <div class="actions">
@@ -1049,19 +1135,24 @@ async function renderSettings(){
   viewRoot.innerHTML = `
     <section class="card">
       <h2>Paramètres de paie</h2>
-      <p class="muted">Tu peux adapter les rates au RP. Les plafonds sont ceux que tu as donnés (convois 5M / sécurité 3.5M / prime 8.5M).</p>
+      <p class="muted">Configure les plafonds + le taux $/h par grade. (Règles fixes : convois ÷ 2 • sécurité ÷ 7 • évènements × 2).</p>
 
       <form id="settingsForm" class="grid2 noPrint">
+        <div class="panel" style="grid-column:1/-1">
+          <h2>Règles de conversion (temps)</h2>
+          <div class="muted">Ces règles sont fixes :</div>
+          <ul class="muted" style="margin:8px 0 0 18px">
+            <li><b>Convois</b> : heures = convois ÷ 2</li>
+            <li><b>Sécurité</b> : heures = contrôles ÷ 7</li>
+            <li><b>Évènements</b> : heures = events × 2</li>
+          </ul>
+          <div class="hint">La paie est calculée avec le <b>taux $/h</b> du grade + plafonds.</div>
+        </div>
+
         <div class="panel">
-          <h2>Rates</h2>
-          <label>$ par convoi
-            <input name="convoyRate" inputmode="numeric" value="${num(p.convoyRate)}" />
-          </label>
-          <label>$ par contrôle sécurité
-            <input name="securityRate" inputmode="numeric" value="${num(p.securityRate)}" />
-          </label>
-          <label>$ par événement sécurisé
-            <input name="eventRate" inputmode="numeric" value="${num(p.eventRate)}" />
+          <h2>Fixe direction</h2>
+          <label>Salaire hebdo Directeur / Co-directeur
+            <input name="directorWeekly" inputmode="numeric" value="${num(p.directorWeekly ?? 8500000)}" />
           </label>
         </div>
 
@@ -1079,11 +1170,11 @@ async function renderSettings(){
         </div>
 
         <div class="panel" style="grid-column:1/-1">
-          <h2>Salaires de base (hebdo)</h2>
-          <div class="muted">Édite si besoin (sinon tu peux laisser les valeurs par défaut).</div>
+          <h2>Taux $/heure par grade</h2>
+          <div class="muted">C'est ce taux qui sert pour calculer la paie des convois / sécurité / évènements.</div>
           <div style="height:8px"></div>
           <table class="table">
-            <thead><tr><th>Grade</th><th style="width:260px">Salaire</th></tr></thead>
+            <thead><tr><th>Grade</th><th style="width:260px">Taux $/h</th></tr></thead>
             <tbody>
               ${Object.keys(DEFAULT_PAY_SETTINGS.baseSalaries).map(rank=>`
                 <tr>
@@ -1114,9 +1205,7 @@ async function renderSettings(){
     }
 
     const next = {
-      convoyRate: num(fd.get("convoyRate")),
-      securityRate: num(fd.get("securityRate")),
-      eventRate: num(fd.get("eventRate")),
+      directorWeekly: num(fd.get("directorWeekly")),
       convoyMax: num(fd.get("convoyMax")),
       securityMax: num(fd.get("securityMax")),
       primeMax: num(fd.get("primeMax")),
