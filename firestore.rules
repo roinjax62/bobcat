@@ -44,27 +44,20 @@ service cloud.firestore {
       allow write: if signedIn() && (isSelf(uid) || isAdmin());
     }
 
-    // Invites: readable by code (get), not listable
+    // Invites: readable by code (get), not listable (except admins)
     match /invites/{code} {
       allow get: if true;
-      allow list: if false;
+      allow list: if isAdmin();
 
       allow create, delete: if isAdmin();
 
       // Mark invite as used: allow update only once by the authenticated user who uses it.
-      // Also prevent changing the core invite fields.
+      // Only allow changing usedBy/usedEmail/usedAt (everything else stays identical).
       allow update: if signedIn()
         && resource.data.usedBy == null
         && request.resource.data.usedBy == request.auth.uid
-        // keep original fields unchanged
-        && request.resource.data.name == resource.data.name
-        && request.resource.data.rank == resource.data.rank
-        && request.resource.data.status == resource.data.status
-        && request.resource.data.qualifications == resource.data.qualifications
-        && request.resource.data.birth == resource.data.birth
-        && request.resource.data.nationality == resource.data.nationality
-        && request.resource.data.createdBy == resource.data.createdBy
-        && request.resource.data.createdAt == resource.data.createdAt;
+        && request.resource.data.usedEmail == request.auth.token.email
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(['usedBy','usedEmail','usedAt']);
     }
   }
 }
