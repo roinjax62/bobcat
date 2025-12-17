@@ -14,6 +14,7 @@ import {
   setDoc,
   updateDoc,
   deleteDoc,
+  deleteField,
   collection,
   getDocs,
   query,
@@ -39,6 +40,7 @@ export const firebase = {
   signInWithEmailAndPassword,
   signOut,
   doc, getDoc, setDoc, updateDoc, deleteDoc,
+  deleteField,
   collection, getDocs, query, orderBy, startAt, endAt, where, documentId, FieldPath,
   serverTimestamp, runTransaction
 };
