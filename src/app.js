@@ -77,6 +77,10 @@ function escapeHtml(s=""){
   return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
 }
 
+function normalizeInviteCode(raw){
+  return String(raw||"").trim().toUpperCase().replace(/\s+/g, "");
+}
+
 async function getPaySettings(){
   const ref = firebase.doc(db, "settings", "pay");
   const snap = await firebase.getDoc(ref);
@@ -243,7 +247,7 @@ el("#loginForm").addEventListener("submit", async (e)=>{
 el("#signupForm").addEventListener("submit", async (e)=>{
   e.preventDefault();
   const fd = new FormData(e.currentTarget);
-  const invite = String(fd.get("invite")||"").trim();
+  const invite = normalizeInviteCode(fd.get("invite"));
   const email = String(fd.get("email")||"").trim();
   const password = String(fd.get("password")||"");
   if (!invite) return toast("Code d’invitation requis.", "error");
@@ -975,11 +979,12 @@ viewRoot.querySelectorAll(".btnViewContract").forEach(btn=>{
     try{
       const ref = firebase.doc(db, "invites", code);
       await firebase.setDoc(ref, {
-        code,
         name, birth, nationality,
         rank, status,
         qualifications,
-        isAdmin: false,
+        usedBy: null,
+        usedEmail: null,
+        usedAt: null,
         createdAt: firebase.serverTimestamp(),
         createdBy: state.user.uid
       });
@@ -1256,7 +1261,7 @@ async function renderMissingProfile(){
 
   el("#repairForm").addEventListener("submit", async (e)=>{
     e.preventDefault();
-    const code = String(new FormData(e.currentTarget).get("invite")||"").trim();
+    const code = normalizeInviteCode(new FormData(e.currentTarget).get("invite"));
     if (!code) return toast("Code requis.", "error");
     try{
       await createEmployeeProfileFromInvite(state.user.uid, state.user.email, code);
