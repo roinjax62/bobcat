@@ -191,6 +191,7 @@ hr.sep{border:none; border-top:1px solid rgba(255,255,255,.10); margin:14px 0}
 
 
 .viewAsBar{display:flex; justify-content:space-between; align-items:center; padding:10px 12px; border:1px solid var(--border); border-radius:14px; background:rgba(15,20,32,.6); margin:0 0 12px}
-.contractDoc{white-space:pre-wrap; font-family:var(--mono); background:rgba(15,20,32,.75); border:1px solid var(--border); border-radius:14px; padding:12px; min-height:280px; outline:none}
+.contractDoc{white-space:pre-wrap; font-family:var(--mono); font-size:13px; line-height:1.45; background:rgba(15,20,32,.75); border:1px solid var(--border); border-radius:14px; padding:14px; outline:none}
+.contractEditor{min-height:70vh; font-family:var(--mono)}
 .actions{display:flex; gap:6px; justify-content:flex-end; flex-wrap:wrap}
 button.sm{padding:6px 10px; border-radius:12px; font-size:12px}
