@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Bobcat Security — Comptabilité</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">🛡️</div>
+      <div>
+        <div class="title">Bobcat Security</div>
+        <div class="subtitle">Comptabilité • Convois • Sécurité • Évènements</div>
+      </div>
+    </div>
+
+    <nav class="nav" id="nav">
+      <button class="navbtn" data-view="dashboard">Tableau de bord</button>
+      <button class="navbtn" data-view="payroll">Bulletin</button>
+      <button class="navbtn" data-view="contract">Contrat</button>
+      <button class="navbtn adminOnly" data-view="admin">Admin</button>
+      <button class="navbtn adminOnly" data-view="settings">Paramètres</button>
+      <div class="spacer"></div>
+      <div class="me" id="me"></div>
+      <button class="navbtn danger" id="btnSignOut">Déconnexion</button>
+    </nav>
+  </header>
+
+  <main class="container">
+    <section id="toast" class="toast hidden"></section>
+
+    <section id="authView" class="card">
+      <h1>Connexion</h1>
+      <p class="muted">Chaque employé a son compte. Les données sont stockées dans Firestore (Firebase).</p>
+
+      <div class="grid2">
+        <form id="loginForm" class="panel">
+          <h2>Se connecter</h2>
+          <label>Email
+            <input type="email" name="email" autocomplete="email" required />
+          </label>
+          <label>Mot de passe
+            <input type="password" name="password" autocomplete="current-password" required />
+          </label>
+          <button class="primary" type="submit">Connexion</button>
+          <p class="hint">Si ça bloque : vérifie les “Authorized domains” dans Firebase Auth (voir README).</p>
+        </form>
+
+        <form id="signupForm" class="panel">
+          <h2>Créer un compte</h2>
+          <label>Code d’invitation (fourni par un admin)
+            <input type="text" name="invite" placeholder="ex: BOB-7K2Q-92HD" required />
+          </label>
+          <label>Email
+            <input type="email" name="email" autocomplete="email" required />
+          </label>
+          <label>Mot de passe
+            <input type="password" name="password" autocomplete="new-password" minlength="6" required />
+          </label>
+          <button class="primary" type="submit">Créer mon compte</button>
+          <p class="hint">Le code d’invitation remplit automatiquement ton profil (grade, etc.).</p>
+        </form>
+      </div>
+    </section>
+
+    <section id="appView" class="hidden">
+      <section class="card">
+        <div class="row">
+          <div>
+            <h1 id="viewTitle">Tableau de bord</h1>
+            <p class="muted" id="viewSubtitle">Saisie par jour + récap hebdomadaire</p>
+          </div>
+
+          <div class="weekPicker">
+            <label>Semaine
+              <input type="date" id="weekDate" />
+            </label>
+            <button id="btnThisWeek">Cette semaine</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="viewRoot"></section>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="muted">Bobcat Security • GTA RP • GitHub Pages + Firebase</div>
+  </footer>
+
+  <script type="module" src="./src/app.js"></script>
+</body>
+</html>
