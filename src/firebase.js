@@ -18,6 +18,7 @@ import {
   collection,
   getDocs,
   query,
+  limit,
   orderBy,
   startAt,
   endAt,
@@ -41,6 +42,6 @@ export const firebase = {
   signOut,
   doc, getDoc, setDoc, updateDoc, deleteDoc,
   deleteField,
-  collection, getDocs, query, orderBy, startAt, endAt, where, documentId, FieldPath,
+  collection, getDocs, query, limit, orderBy, startAt, endAt, where, documentId, FieldPath,
   serverTimestamp, runTransaction
 };
