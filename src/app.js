@@ -1,8 +1,23 @@
 import { auth, db, firebase } from "./firebase.js";
 import { UI_ADMIN_EMAILS, DEFAULT_PAY_SETTINGS } from "./config.js";
 
+// ------------------------------------------------------------
+// Bobcat Security — version
+const APP_VERSION = "10.4";
+// Fallback totals to avoid ReferenceError in case of old cached views
+// (module-scoped, shadowed by local variables when present)
+let totalToPay = 0;
+let totalPrime = 0;
+let totalEvents = 0;
+let totalHours = 0;
+let paidCount = 0;
+// Expose for quick debugging
+try { window.__BOBCAT_VERSION__ = APP_VERSION; } catch(e) {}
+// ------------------------------------------------------------
+
+
 // ---- Build / cache-bust ----
-const BUILD = "v10.3";
+const BUILD = "v"+APP_VERSION+"";
 try{
   const el = document.getElementById("buildTag");
   if (el) el.textContent = BUILD;
@@ -1748,3 +1763,9 @@ firebase.onAuthStateChanged(auth, async (user)=>{
 
   render();
 });
+
+// Set UI version label if present
+try{
+  const el = document.getElementById("appVersion");
+  if(el) el.textContent = "v" + APP_VERSION;
+}catch(e){}
