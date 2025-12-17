@@ -46,26 +46,28 @@ service cloud.firestore {
 
     // Invites: readable by code (get), not listable
     match /invites/{code} {
-      // Lecture d'un code (doc unique) : autorisé même sans être connecté
-      allow get: if true;
+      // Lecture d'une invite : OK si connecté (l'inscription se fait après création du compte)
+      allow get: if request.auth != null;
 
-      // Compat : certaines versions ont besoin d'une requête (where('code'==...)).
-      // On autorise les requêtes UNIQUEMENT pour les utilisateurs connectés, et seulement si la requête est très limitée.
-      // (Évite l'énumération massive.)
-      allow list: if signedIn()
-        && request.query.limit != null
-        && request.query.limit <= 1
-        && (request.query.offset == null || request.query.offset == 0);
+      // Lister toutes les invites : admin uniquement
+      allow list: if isAdmin();
 
-      allow create, delete: if isAdmin();
+      // Créer une invite : admin uniquement
+      allow create: if isAdmin();
 
-      // Marquer un code comme "utilisé" : une seule fois, par l'utilisateur qui s'inscrit.
-      // Seuls les champs usedBy/usedEmail/usedAt sont modifiables.
-      allow update: if signedIn()
-        && (resource.data.usedBy == null)
-        && request.resource.data.usedBy == request.auth.uid
-        && request.resource.data.usedEmail == request.auth.token.email
-        && request.resource.data.diff(resource.data).changedKeys().hasOnly(['usedBy','usedEmail','usedAt']);
+      // Consommer une invite : autorisé au nouvel employé SI l'invite est libre
+      allow update: if isAdmin() || (
+        request.auth != null &&
+        (resource.data.usedBy == null) &&
+      // On n'autorise à modifier QUE ces 3 champs
+        request.resource.data.diff(resource.data).changedKeys()
+        .hasOnly(['usedBy', 'usedEmail', 'usedAt']) &&
+        request.resource.data.usedBy == request.auth.uid &&
+        request.resource.data.usedEmail == request.auth.token.email &&
+        request.resource.data.usedAt is timestamp
+      );
+
+      allow delete: if isAdmin();
     }
   }
 }
