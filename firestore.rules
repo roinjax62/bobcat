@@ -26,7 +26,9 @@ service cloud.firestore {
     match /employees/{uid} {
       allow read: if signedIn() && (isSelf(uid) || isAdmin());
       allow create: if isSelf(uid);
-      allow update: if (isSelf(uid) && request.resource.data.isAdmin == resource.data.isAdmin) || isAdmin();
+      // 🔒 Les employés ne modifient pas leur fiche (grade/qualifs/contrat/etc.)
+      //     Seuls les admins peuvent tout gérer.
+      allow update: if isAdmin();
       allow delete: if isAdmin();
 
       match /workDays/{dayId} {
