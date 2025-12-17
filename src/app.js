@@ -1363,6 +1363,12 @@ async function renderSettings(){
 
   const p = state.pay;
 
+  const wd = state.adminWeekDate || new Date();
+  const wsDate = startOfWeek(wd);
+  const weDate = endOfWeek(wd);
+  const weekStartStr = dateToStr(wsDate);
+  const weekEndStr = dateToStr(weDate);
+
   viewRoot.innerHTML = `
     <section class="card">
       <div class="row">
