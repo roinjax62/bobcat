@@ -717,7 +717,11 @@ async function renderContract(forUid=null){
 
       <hr class="sep" />
 
-      <div id="contractDoc" class="contractDoc"></div>
+      <div class="contractWrap">
+        <article class="contractPaper" aria-label="Contrat CDI">
+          <pre id="contractDoc" class="contractDoc" aria-readonly="true"></pre>
+        </article>
+      </div>
 
       <div class="row noPrint" style="margin-top:10px">
         <button id="btnCopyContract">Copier</button>
