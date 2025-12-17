@@ -222,44 +222,60 @@ el("#signupForm").addEventListener("submit", async (e)=>{
       return toast("Code déjà utilisé.", "error");
     }
 
-    const cred = await firebase.createUserWithEmailAndPassword(auth, email, password);
+    let cred;
+    cred = await firebase.createUserWithEmailAndPassword(auth, email, password);
     const uid = cred.user.uid;
 
-    // Transaction: verrouille le code + crée le profil
-    await firebase.runTransaction(db, async (tx)=>{
-      const inv = await tx.get(inviteRef);
-      if (!inv.exists()) throw new Error("Code invalide.");
-      const invData = inv.data();
-      if (invData.usedBy) throw new Error("Code déjà utilisé.");
+    // Token refresh: évite un cas rare où la 1ère écriture Firestore est refusée juste après la création du compte
+    await cred.user.getIdToken(true);
 
-      const empRef = firebase.doc(db, "employees", uid);
-
-      tx.set(empRef, {
-        email,
-        name: invData.name || "",
-        birth: invData.birth || "",
-        nationality: invData.nationality || "américaine / mexicaine",
-        rank: invData.rank || "Novice",
-        status: invData.status || "Actif",
-        qualifications: invData.qualifications || [],
-        joinDate: invData.joinDate || dateToStr(new Date()),
-        isAdmin: false,
-        createdAt: firebase.serverTimestamp(),
-        updatedAt: firebase.serverTimestamp()
-      }, { merge: true });
-
-      tx.update(inviteRef, {
-        usedBy: uid,
-        usedEmail: email,
-        usedAt: firebase.serverTimestamp()
-      });
-    });
+    // Crée le profil employé + verrouille le code
+    await createEmployeeProfileFromInvite(uid, email, invite);
 
     toast("Compte créé ✅");
   }catch(err){
+    // Si Auth a réussi mais Firestore a échoué, on supprime l'utilisateur fraîchement créé pour éviter un "compte orphelin"
+    try{ await auth.currentUser?.delete(); }catch(_e){}
     toast(err?.message || "Erreur de création", "error");
   }
 });
+
+/** ---------- Profil via invitation (utilisé à l'inscription + réparation) ---------- */
+async function createEmployeeProfileFromInvite(uid, email, inviteCode){
+  const inviteRef = firebase.doc(db, "invites", inviteCode);
+  const inviteSnap = await firebase.getDoc(inviteRef);
+  if (!inviteSnap.exists()) throw new Error("Code d’invitation invalide.");
+  if (inviteSnap.data()?.usedBy) throw new Error("Code déjà utilisé.");
+
+  await firebase.runTransaction(db, async (tx)=>{
+    const inv = await tx.get(inviteRef);
+    if (!inv.exists()) throw new Error("Code invalide.");
+    const invData = inv.data();
+    if (invData.usedBy) throw new Error("Code déjà utilisé.");
+
+    const empRef = firebase.doc(db, "employees", uid);
+    tx.set(empRef, {
+      email,
+      name: invData.name || "",
+      birth: invData.birth || "",
+      nationality: invData.nationality || "américaine / mexicaine",
+      rank: invData.rank || "Novice",
+      status: invData.status || "Actif",
+      qualifications: invData.qualifications || [],
+      joinDate: invData.joinDate || dateToStr(new Date()),
+      isAdmin: false,
+      createdAt: firebase.serverTimestamp(),
+      updatedAt: firebase.serverTimestamp()
+    }, { merge: true });
+
+    tx.update(inviteRef, {
+      usedBy: uid,
+      usedEmail: email,
+      usedAt: firebase.serverTimestamp()
+    });
+  });
+}
+
 
 btnSignOut.addEventListener("click", async ()=>{
   await firebase.signOut(auth);
@@ -304,7 +320,7 @@ async function loadWeekDays(uid, startStr, endStr){
   const col = firebase.collection(db, "employees", uid, "workDays");
   const q = firebase.query(
     col,
-    firebase.orderBy(firebase.FieldPath.documentId()),
+    firebase.orderBy(firebase.documentId()),
     firebase.startAt(startStr),
     firebase.endAt(endStr)
   );
@@ -938,6 +954,52 @@ async function renderSettings(){
   });
 }
 
+
+/** ---------- Profil manquant : réparation ---------- */
+async function renderMissingProfile(){
+  // On masque la navigation pour éviter des vues qui dépendent du profil
+  nav.classList.add("hidden");
+  setActiveNav("dashboard");
+
+  viewTitle.textContent = "Profil manquant";
+  viewSubtitle.textContent = "Rattache ton compte à un employé via un code d’invitation";
+
+  viewRoot.innerHTML = `
+    <section class="card">
+      <h2>Profil employé non trouvé</h2>
+      <p class="muted">Ton compte est bien connecté : <b>${escapeHtml(state.user?.email || "—")}</b></p>
+      <p class="muted">Entre un code d’invitation fourni par un admin pour créer ton profil.</p>
+
+      <form id="repairForm" class="grid2" style="align-items:end;margin-top:12px">
+        <label>Code d’invitation
+          <input name="invite" required placeholder="XXXXXX-XXXX" />
+        </label>
+        <button>Créer mon profil</button>
+      </form>
+
+      <p class="muted" style="margin-top:10px">Si tu n’as pas de code, contacte un admin.</p>
+    </section>
+  `;
+
+  el("#repairForm").addEventListener("submit", async (e)=>{
+    e.preventDefault();
+    const code = String(new FormData(e.currentTarget).get("invite")||"").trim();
+    if (!code) return toast("Code requis.", "error");
+    try{
+      await createEmployeeProfileFromInvite(state.user.uid, state.user.email, code);
+      // Recharge le profil
+      state.profile = await loadProfile(state.user.uid);
+      nav.classList.remove("hidden");
+      state.currentView = "dashboard";
+      toast("Profil créé ✅");
+      render();
+    }catch(err){
+      console.error(err);
+      toast(err?.message || "Erreur création profil", "error");
+    }
+  });
+}
+
 /** ---------- Main render ---------- */
 async function render(){
   setActiveNav(state.currentView);
@@ -955,6 +1017,11 @@ async function render(){
 
   enforceAdminUI();
   me.textContent = state.user?.email ? `${state.user.email}` : "";
+
+  if (!state.profile){
+    await renderMissingProfile();
+    return;
+  }
 
   // Week input default
   weekDateInput.value = dateToStr(state.weekDate);
@@ -1002,13 +1069,6 @@ firebase.onAuthStateChanged(auth, async (user)=>{
   state.profile = await loadProfile(user.uid);
 
   if (!state.profile){
-    // Rare case: user created without invite (or profile deleted). Provide fix message.
-    viewRoot.innerHTML = `
-      <section class="card">
-        <h2>Profil manquant</h2>
-        <p class="muted">Ton compte existe, mais ton profil employé n'a pas été créé. Contacte un admin pour obtenir un code d'invitation et qu'il te recrée un profil.</p>
-      </section>
-    `;
     state.currentView = "dashboard";
     render();
     return;
