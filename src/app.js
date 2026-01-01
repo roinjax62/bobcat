@@ -3,7 +3,7 @@ import { UI_ADMIN_EMAILS, DEFAULT_PAY_SETTINGS } from "./config.js";
 
 // ------------------------------------------------------------
 // Bobcat Security — version
-const APP_VERSION = "10.4";
+const APP_VERSION = "11.0";
 // Fallback totals to avoid ReferenceError in case of old cached views
 // (module-scoped, shadowed by local variables when present)
 let totalToPay = 0;
@@ -45,6 +45,7 @@ const QUALIFICATIONS = [
   "Assistance",
   "Moto",
   "Equipement léger",
+  "Equipement légé",
   "Equipement lourd",
   "Equipement convois",
   "Equipement sécurité",
@@ -120,20 +121,31 @@ function computeWorkHours(totals){
   return { hoursConvoy, hoursSecurity, hoursEvent, hoursTotal };
 }
 
-function computePay({rank, totals, pay}){
+function computePay({rank, totals, pay, seniorityEnabled=false}){
   const hourRate = (pay.baseSalaries?.[rank] ?? 0) || 0; // $/heure selon le grade
   const { hoursConvoy, hoursSecurity, hoursEvent, hoursTotal } = computeWorkHours(totals);
 
   // Directeur / Co-directeur : fixe hebdo
   if (rank === "Directeur" || rank === "Co-directeur"){
-    const fixed = pay.directorWeekly ?? 8500000;
+    const fixed = num(pay.directorWeekly ?? 8500000);
     const perHour = hoursTotal > 0 ? fixed / hoursTotal : null;
     return {
-      hourRate, base: fixed,
-      convoyPay: 0, securityPay: 0, prime: 0, eventPay: 0,
+      hourRate,
+      base: fixed,
+      basePay: fixed,
+      responsableBase: 0,
+      seniorityRate: num(pay.seniorityRate ?? 0.07),
+      seniorityEnabled: false,
+      seniorityBonus: 0,
+      convoyPay: 0,
+      securityPay: 0,
+      prime: 0,
+      eventPay: 0,
+      variablePay: fixed,
       total: fixed,
       hoursConvoy, hoursSecurity, hoursEvent, hoursTotal,
-      perHour, fixedWeekly: fixed
+      perHour,
+      fixedWeekly: fixed
     };
   }
 
@@ -142,19 +154,43 @@ function computePay({rank, totals, pay}){
   const securityPayRaw = hoursSecurity * hourRate;
   const eventPayRaw = hoursEvent * hourRate; // pas de max
 
-  const convoyPay = Math.min(convoyPayRaw, pay.convoyMax);
-  const securityPay = Math.min(securityPayRaw, pay.securityMax);
+  const convoyPay = Math.min(convoyPayRaw, num(pay.convoyMax));
+  const securityPay = Math.min(securityPayRaw, num(pay.securityMax));
 
   // Prime = convois + sécurité (max 8.5M par défaut)
-  const prime = Math.min(convoyPay + securityPay, pay.primeMax);
+  const prime = Math.min(convoyPay + securityPay, num(pay.primeMax));
 
   const eventPay = eventPayRaw;
 
-  const total = prime + eventPay;
+  // Variable = prime + events
+  const variablePay = prime + eventPay;
+
+  // Prime d'ancienneté (par employé)
+  const seniorityRate = num(pay.seniorityRate ?? 0.07);
+  const seniorityBonus = seniorityEnabled ? (variablePay * seniorityRate) : 0;
+
+  // Salaire de base "Responsable" (hebdo), selon le fichier compta (5000000)
+  const responsableBase = (rank === "Responsable") ? num(pay.responsableBase ?? 5000000) : 0;
+
+  const total = variablePay + seniorityBonus + responsableBase;
 
   const perHour = hoursTotal > 0 ? total / hoursTotal : null;
 
-  return { hourRate, base: 0, convoyPay, securityPay, prime, eventPay, total, hoursConvoy, hoursSecurity, hoursEvent, hoursTotal, perHour };
+  return {
+    hourRate,
+    base: 0,
+    basePay: 0,
+    responsableBase,
+    seniorityRate,
+    seniorityEnabled: !!seniorityEnabled,
+    seniorityBonus,
+    convoyPay, securityPay, prime, eventPay,
+    variablePay,
+    total,
+    hoursConvoy, hoursSecurity, hoursEvent, hoursTotal,
+    perHour,
+    fixedWeekly: 0
+  };
 }
 
 function contractTemplate({name, birth, nationality, dateStr, rank}){
@@ -342,6 +378,10 @@ async function createEmployeeProfileFromInvite(uid, email, inviteCode){
       rank: invData.rank || "Novice",
       status: invData.status || "Actif",
       qualifications: invData.qualifications || [],
+      matricule: invData.matricule || "",
+      nextRank: invData.nextRank || "N/A",
+      verification: invData.verification || "Clean",
+      seniorityEnabled: !!invData.seniorityEnabled,
       joinDate: invData.joinDate || dateToStr(new Date()),
       isAdmin: false,
       createdAt: firebase.serverTimestamp(),
@@ -537,7 +577,7 @@ async function renderDashboard(forUid=null){
 
   const days = await loadWeekDays(uid, startStr, endStr);
   const totals = computeTotals(days);
-  const payResult = computePay({ rank: profile.rank, totals, pay: state.pay });
+  const payResult = computePay({ rank: profile.rank, totals, pay: state.pay, seniorityEnabled: !!profile.seniorityEnabled });
 
   const rows = [];
   for (let i=0;i<7;i++){
@@ -558,6 +598,9 @@ async function renderDashboard(forUid=null){
       <div class="row">
         <div class="pills">
           <span class="pill neutral">Grade: <b>${escapeHtml(profile.rank)}</b></span>
+          ${profile.matricule ? `<span class="pill neutral">Matricule: <b>${escapeHtml(profile.matricule)}</b></span>` : ``}
+          ${profile.seniorityEnabled ? `<span class="pill neutral">Ancienneté: <b>+${Math.round((state.pay.seniorityRate??0.07)*100)}%</b></span>` : ``}
+          ${(state.profile?.isAdmin && profile.verification) ? `<span class="pill neutral">Vérif: <b>${escapeHtml(profile.verification)}</b></span>` : ``}
           <span class="pill ${profile.status==="Actif"?"good":(profile.status==="Suspendu"?"bad":"bad")}">Statut: <b>${escapeHtml(profile.status)}</b></span>
         </div>
         <div class="pills">
@@ -608,10 +651,10 @@ async function renderDashboard(forUid=null){
       <h2>Récap hebdomadaire (paie)</h2>
 
       <div class="kpis">
-        <div class="kpi"><div class="label">Salaire de base</div><div class="value">${money(payResult.base)}</div><div class="sub">Selon grade</div></div>
-        <div class="kpi"><div class="label">Salaire convois</div><div class="value">${money(payResult.convoyPay)}</div><div class="sub">Max ${money(state.pay.convoyMax)}</div></div>
-        <div class="kpi"><div class="label">Salaire sécurité</div><div class="value">${money(payResult.securityPay)}</div><div class="sub">Max ${money(state.pay.securityMax)}</div></div>
+        <div class="kpi"><div class="label">Prime (convois + sécurité)</div><div class="value">${money(payResult.prime)}</div><div class="sub">Max ${money(state.pay.primeMax)}</div></div>
         <div class="kpi"><div class="label">Salaire évènements</div><div class="value">${money(payResult.eventPay)}</div><div class="sub">Pas de max</div></div>
+        <div class="kpi"><div class="label">Base Responsable</div><div class="value">${money(payResult.responsableBase||0)}</div><div class="sub">si grade Responsable</div></div>
+        <div class="kpi"><div class="label">Bonus ancienneté</div><div class="value">${money(payResult.seniorityBonus||0)}</div><div class="sub">${Math.round((state.pay.seniorityRate??0.07)*100)}% sur (prime+events)</div></div>
       </div>
 
       <hr class="sep" />
@@ -621,6 +664,9 @@ async function renderDashboard(forUid=null){
           <h2>Détails</h2>
           <div class="muted">Prime max (convois + sécurité) : <b>${money(state.pay.primeMax)}</b></div>
           <div class="muted">Prime réelle : <b>${money(payResult.prime)}</b></div>
+          <div class="muted">Évènements : <b>${money(payResult.eventPay)}</b></div>
+          <div class="muted">Base Responsable : <b>${money(payResult.responsableBase||0)}</b></div>
+          <div class="muted">Bonus ancienneté : <b>${money(payResult.seniorityBonus||0)}</b></div>
           <div class="muted">Total estimé : <b>${money(payResult.total)}</b></div>
           <div class="muted">Heures : <b>${hoursFmt(payResult.hoursTotal)}</b> h • Rapport : <b>${payResult.perHour ? money(payResult.perHour)+"/h" : "—"}</b></div>
         </div>
@@ -733,7 +779,7 @@ async function renderPayroll(forUid=null){
 
   const days = await loadWeekDays(uid, startStr, endStr);
   const totals = computeTotals(days);
-  const payResult = computePay({ rank: profile.rank, totals, pay: state.pay });
+  const payResult = computePay({ rank: profile.rank, totals, pay: state.pay, seniorityEnabled: !!profile.seniorityEnabled });
 
   viewRoot.innerHTML = `
     ${renderViewAsBar()}
@@ -759,7 +805,9 @@ async function renderPayroll(forUid=null){
           </div>
           <div class="pills">
             <span class="pill neutral">Grade: <b>${escapeHtml(profile.rank)}</b></span>
+            ${profile.matricule ? `<span class="pill neutral">Matricule: <b>${escapeHtml(profile.matricule)}</b></span>` : ``}
             <span class="pill neutral">Taux grade $/h : <b>${money((state.pay.baseSalaries?.[profile.rank] ?? 0) || 0)}</b></span>
+            ${profile.seniorityEnabled ? `<span class="pill neutral">Ancienneté: <b>+${Math.round((state.pay.seniorityRate??0.07)*100)}%</b></span>` : ``}
             <span class="pill ${profile.status==="Actif"?"good":"bad"}">Statut: <b>${escapeHtml(profile.status)}</b></span>
           </div>
         </div>
@@ -786,6 +834,8 @@ async function renderPayroll(forUid=null){
             <tr><td><b>Sécurité</b></td><td>${totals.securityChecks} contrôles → ${hoursFmt(payResult.hoursSecurity)} h (÷7) × ${money(payResult.hourRate)}/h (max ${money(state.pay.securityMax)})</td><td style="text-align:right">${money(payResult.securityPay)}</td></tr>
             <tr><td><b>Prime (Convois + Sécurité)</b></td><td>Max ${money(state.pay.primeMax)}</td><td style="text-align:right">${money(payResult.prime)}</td></tr>
             <tr><td><b>Évènements</b></td><td>${totals.securedEvents} events → ${hoursFmt(payResult.hoursEvent)} h (×2) × ${money(payResult.hourRate)}/h (pas de max)</td><td style="text-align:right">${money(payResult.eventPay)}</td></tr>
+            ${payResult.responsableBase ? `<tr><td><b>Salaire de base Responsable</b></td><td>Fixe hebdo</td><td style="text-align:right">${money(payResult.responsableBase)}</td></tr>` : ``}
+            <tr><td><b>Prime d'ancienneté</b></td><td>${Math.round((state.pay.seniorityRate??0.07)*100)}% sur (prime + évènements) • ${payResult.seniorityEnabled ? "activée" : "désactivée"}</td><td style="text-align:right">${money(payResult.seniorityBonus||0)}</td></tr>
             <tr><td><b>Total heures</b></td><td>Convois/2 + Sécurité/7 + Events×2</td><td style="text-align:right">${hoursFmt(payResult.hoursTotal)} h</td></tr>
             <tr><td><b>Rapport $/heure</b></td><td>Total / heures</td><td style="text-align:right"><b>${payResult.perHour ? money(payResult.perHour)+"/h" : "—"}</b></td></tr>
             <tr><td><b>TOTAL À PAYER</b></td><td></td><td style="text-align:right"><b>${money(payResult.total)}</b></td></tr>
@@ -985,7 +1035,7 @@ async function renderAdmin(){
   const rowsData = employees.map(emp=>{
     const ws = weekStats.get(emp.uid) || { convoys:0, securityChecks:0, securedEvents:0 };
     const totals = { convoys:num(ws.convoys), securityChecks:num(ws.securityChecks), securedEvents:num(ws.securedEvents) };
-    let pr = computePay({ rank: emp.rank || "—", totals, pay: state.pay });
+    let pr = computePay({ rank: emp.rank || "—", totals, pay: state.pay, seniorityEnabled: !!emp.seniorityEnabled });
 
     const payable = (emp.status || "Actif") === "Actif";
     if (!payable){
@@ -1064,6 +1114,9 @@ async function renderAdmin(){
             <label>Nom & Prénom
               <input name="name" required />
             </label>
+            <label>Matricule (optionnel)
+              <input name="matricule" placeholder="ex: 416" />
+            </label>
             <label>Date de naissance
               <input name="birth" placeholder="JJ/MM/AAAA ou texte RP" />
             </label>
@@ -1077,6 +1130,22 @@ async function renderAdmin(){
             </label>
             <label>Statut
               <select name="status">${STATUSES.map(s=>`<option>${escapeHtml(s)}</option>`).join("")}</select>
+            </label>
+            <label>Next grade (optionnel)
+              <select name="nextRank">
+                <option value="N/A">N/A</option>
+                ${RANKS.filter(r=>r!=="Licencier").map(r=>`<option>${escapeHtml(r)}</option>`).join("")}
+              </select>
+            </label>
+            <label>Vérification
+              <select name="verification">
+                <option>Clean</option>
+                <option>Fraude</option>
+              </select>
+            </label>
+            <label style="display:flex; gap:10px; align-items:center; margin-top:6px">
+              <input type="checkbox" name="seniorityEnabled" />
+              Prime d'ancienneté (+7%)
             </label>
             <label>Qualifications
               <select name="qualifications" multiple size="5">
@@ -1102,11 +1171,13 @@ async function renderAdmin(){
       <th>Qualifications</th>
       <th>Convois</th>
       <th>Sécurité</th>
-      <th>Events</th>
+      <th># Events</th>
       <th>Heures</th>
       <th>Prime</th>
-      <th>Events</th>
-      <th>À payer</th>
+      <th>$ Events</th>
+      <th>Base</th>
+      <th>Bonus</th>
+      <th>Total</th>
       <th style="width:340px"></th>
     </tr>
   </thead>
@@ -1115,7 +1186,13 @@ async function renderAdmin(){
       <tr data-uid="${row.emp.uid}">
         <td>
           <b>${escapeHtml(row.emp.name||"—")}</b>
-          <div class="muted">${escapeHtml(row.emp.email||"—")} • <span style="font-family:var(--mono)">${escapeHtml(row.emp.uid)}</span></div>
+          <div class="muted">
+            ${escapeHtml(row.emp.email||"—")}
+            ${row.emp.matricule ? ` • Mat: <b>${escapeHtml(row.emp.matricule)}</b>` : ``}
+            ${row.emp.seniorityEnabled ? ` • <b>Ancienneté</b>` : ``}
+            ${row.emp.verification ? ` • <b>${escapeHtml(row.emp.verification)}</b>` : ``}
+            • <span style="font-family:var(--mono)">${escapeHtml(row.emp.uid)}</span>
+          </div>
         </td>
         <td>${escapeHtml(row.emp.rank||"—")}</td>
         <td>${escapeHtml(row.emp.status||"—")}${row.emp.isAdmin?` <span class="pill neutral">ADMIN</span>`:""}</td>
@@ -1131,6 +1208,8 @@ async function renderAdmin(){
         <td>${hoursFmt(row.pr.hoursTotal || 0)}</td>
         <td>${money(row.pr.prime || 0)}</td>
         <td>${money(row.pr.eventPay || 0)}</td>
+        <td>${money(row.pr.responsableBase || 0)}</td>
+        <td>${money(row.pr.seniorityBonus || 0)}</td>
         <td><b>${money(row.pr.total)}</b></td>
         <td class="noPrint">
           <div class="actions">
@@ -1215,6 +1294,10 @@ viewRoot.querySelectorAll(".btnViewContract").forEach(btn=>{
     const nationality = String(fd.get("nationality")||"").trim() || "américaine / mexicaine";
     const rank = String(fd.get("rank")||"Novice");
     const status = String(fd.get("status")||"Actif");
+    const nextRank = String(fd.get("nextRank")||"N/A");
+    const matricule = String(fd.get("matricule")||"").trim();
+    const verification = String(fd.get("verification")||"Clean");
+    const seniorityEnabled = !!fd.get("seniorityEnabled");
     const qualifications = [...e.currentTarget.querySelector('select[name="qualifications"]').selectedOptions].map(o=>o.value);
 
     const code = generateInviteCode();
@@ -1224,6 +1307,10 @@ viewRoot.querySelectorAll(".btnViewContract").forEach(btn=>{
         code,
         name, birth, nationality,
         rank, status,
+        nextRank,
+        matricule,
+        verification,
+        seniorityEnabled,
         qualifications,
         isAdmin: false,
         // champs "used*" explicitement à null : évite des règles trop strictes et clarifie l'état du code
@@ -1287,6 +1374,9 @@ async function openEmployeeEditor(emp){
   const rankOptions = RANKS.map(r=>`<option ${emp.rank===r?"selected":""}>${escapeHtml(r)}</option>`).join("");
   const statusOptions = STATUSES.map(s=>`<option ${emp.status===s?"selected":""}>${escapeHtml(s)}</option>`).join("");
 
+  const nextRankOptions = [`<option value="N/A" ${(emp.nextRank||"N/A")==="N/A"?"selected":""}>N/A</option>`, ...RANKS.filter(r=>r!=="Licencier").map(r=>`<option value="${escapeHtml(r)}" ${(emp.nextRank||"N/A")===r?"selected":""}>${escapeHtml(r)}</option>`)].join("");
+  const verificationOptions = ["Clean","Fraude"].map(v=>`<option ${ (emp.verification||"Clean")===v?"selected":"" }>${escapeHtml(v)}</option>`).join("");
+
   const quals = new Set(emp.qualifications || []);
   const qualOptions = QUALIFICATIONS.map(q=>`<option value="${escapeHtml(q)}" ${quals.has(q)?"selected":""}>${escapeHtml(q)}</option>`).join("");
 
@@ -1308,6 +1398,9 @@ async function openEmployeeEditor(emp){
         <label>Nom
           <input name="name" value="${escapeHtml(emp.name||"")}" />
         </label>
+        <label>Matricule
+          <input name="matricule" value="${escapeHtml(emp.matricule||"")}" />
+        </label>
         <label>Date de naissance
           <input name="birth" value="${escapeHtml(emp.birth||"")}" />
         </label>
@@ -1321,6 +1414,16 @@ async function openEmployeeEditor(emp){
         </label>
         <label>Statut
           <select name="status">${statusOptions}</select>
+        </label>
+        <label>Next grade
+          <select name="nextRank">${nextRankOptions}</select>
+        </label>
+        <label>Vérification
+          <select name="verification">${verificationOptions}</select>
+        </label>
+        <label style="display:flex; gap:10px; align-items:center; margin-top:6px">
+          <input type="checkbox" name="seniorityEnabled" ${emp.seniorityEnabled?"checked":""} />
+          Prime d'ancienneté (+7%)
         </label>
         <label>Qualifications (Ctrl+clic)
           <select name="qualifications" multiple size="7">${qualOptions}</select>
@@ -1352,12 +1455,16 @@ async function openEmployeeEditor(emp){
     const nationality = String(fd.get("nationality")||"").trim();
     const rank = String(fd.get("rank")||"Novice");
     const status = String(fd.get("status")||"Actif");
+    const nextRank = String(fd.get("nextRank")||"N/A");
+    const matricule = String(fd.get("matricule")||"").trim();
+    const verification = String(fd.get("verification")||"Clean");
+    const seniorityEnabled = !!fd.get("seniorityEnabled");
     const isAdmin = !!fd.get("isAdmin");
     const qualifications = [...e.currentTarget.querySelector('select[name="qualifications"]').selectedOptions].map(o=>o.value);
 
     try{
       const ref = firebase.doc(db, "employees", emp.uid);
-      await firebase.updateDoc(ref, { name, birth, nationality, rank, status, isAdmin, qualifications, updatedAt: firebase.serverTimestamp() });
+      await firebase.updateDoc(ref, { name, birth, nationality, rank, status, nextRank, matricule, verification, seniorityEnabled, isAdmin, qualifications, updatedAt: firebase.serverTimestamp() });
       toast("Employé mis à jour ✅");
       render(); // refresh list
     }catch(err){
@@ -1427,7 +1534,7 @@ async function renderSettings(){
     const rows = employees.map(emp=>{
       const ws = weekStats.get(emp.uid) || { convoys:0, securityChecks:0, securedEvents:0 };
       const totals = { convoys:num(ws.convoys), securityChecks:num(ws.securityChecks), securedEvents:num(ws.securedEvents) };
-      let pr = computePay({ rank: emp.rank || "—", totals, pay: state.pay });
+      let pr = computePay({ rank: emp.rank || "—", totals, pay: state.pay, seniorityEnabled: !!emp.seniorityEnabled });
       const payable = (emp.status || "Actif") === "Actif";
       if (!payable){
         pr = { ...pr, convoyPay:0, securityPay:0, prime:0, eventPay:0, total:0, fixedWeekly:0, hoursTotal:0 };
@@ -1508,6 +1615,22 @@ async function renderSettings(){
         </div>
 
         <div class="panel">
+          <h2>Responsable</h2>
+          <label>Salaire de base hebdo (Responsable)
+            <input name="responsableBase" inputmode="numeric" value="${num(p.responsableBase ?? 5000000)}" />
+          </label>
+          <div class="hint">Ajouté au total uniquement pour le grade “Responsable”.</div>
+        </div>
+
+        <div class="panel">
+          <h2>Ancienneté</h2>
+          <label>Taux prime d'ancienneté (%)
+            <input name="seniorityRate" inputmode="numeric" value="${num((p.seniorityRate ?? 0.07) * 100)}" />
+          </label>
+          <div class="hint">Appliquée sur (prime + évènements) si activée sur la fiche employé.</div>
+        </div>
+
+        <div class="panel">
           <h2>Plafonds hebdo</h2>
           <label>Max convois
             <input name="convoyMax" inputmode="numeric" value="${num(p.convoyMax)}" />
@@ -1560,8 +1683,11 @@ if (!canEditSettings){
       baseSalaries[rank] = num(fd.get(`base_${rank}`));
     }
 
+    const seniorityRatePct = num(fd.get("seniorityRate"));
     const next = {
       directorWeekly: num(fd.get("directorWeekly")),
+      responsableBase: num(fd.get("responsableBase")),
+      seniorityRate: (seniorityRatePct || 0) / 100,
       convoyMax: num(fd.get("convoyMax")),
       securityMax: num(fd.get("securityMax")),
       primeMax: num(fd.get("primeMax")),
@@ -1570,7 +1696,7 @@ if (!canEditSettings){
 
     try{
       await setPaySettings(next);
-      state.pay = next;
+      state.pay = { ...(state.pay||{}), ...next };
       toast("Paramètres sauvegardés ✅");
       render();
     }catch(err){
